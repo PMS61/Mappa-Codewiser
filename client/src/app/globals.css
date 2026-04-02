@@ -1,0 +1,432 @@
+/* ═══════════════════════════════════════════════════════════
+   THE AXIOM — Design System
+   Matched to landing.html aesthetic: Swiss editorial,
+   generous whitespace, ultra-thin rules, no decoration.
+   ═══════════════════════════════════════════════════════════ */
+
+@import "tailwindcss";
+
+/* ── Design Tokens ─────────────────────────────────────── */
+:root {
+  --bg: #FAF7F2;
+  --ink: #1A1A1A;
+  --rule: #D4C9B8;
+  --vermillion: #C0392B;
+  --muted: #5A5A5A;
+  --card-bg: #FDFCFA;
+
+  /* Semantic accents */
+  --safe: #2C6E49;
+  --watch: #B45309;
+  --warning: #C0392B;
+  --critical: #7F1D1D;
+
+  /* Task states */
+  --state-scheduled: var(--ink);
+  --state-inprogress: #1E40AF;
+  --state-completed: #166534;
+  --state-skipped: #92400E;
+  --state-sacrificed: var(--vermillion);
+
+  /* Fonts */
+  --mono: 'IBM Plex Mono', monospace;
+  --serif: 'Playfair Display', serif;
+}
+
+/* ── Reset ─────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Typography ────────────────────────────────────────── */
+h1, h2, h3, h4 {
+  font-family: var(--serif);
+  font-weight: 700;
+}
+
+h1 { font-size: 36px; line-height: 1.15; }
+h2 { font-size: 24px; line-height: 1.25; }
+h3 { font-size: 18px; line-height: 1.3; }
+
+/* Meta text — the signature label style from landing */
+.meta-text {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--muted);
+}
+
+/* ── Rules (the only separator) ────────────────────────── */
+.section-rule {
+  border-bottom: 0.5px solid var(--rule);
+}
+
+.rule-ink {
+  border-bottom: 0.5px solid var(--ink);
+}
+
+.rule-left {
+  border-left: 0.5px solid var(--rule);
+}
+
+.rule-right {
+  border-right: 0.5px solid var(--rule);
+}
+
+/* ── Container ─────────────────────────────────────────── */
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ── Navigation (fixed, 60px, matching landing.html) ──── */
+.nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: var(--bg);
+  border-bottom: 0.5px solid var(--ink);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+}
+
+.nav-inner {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.logo {
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 700;
+  text-decoration: none;
+  color: var(--ink);
+}
+
+.nav-link {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  color: var(--ink);
+  padding-bottom: 2px;
+}
+
+.nav-link:hover {
+  border-bottom: 0.5px solid var(--ink);
+}
+
+.nav-link.active {
+  border-bottom: 0.5px solid var(--ink);
+  font-weight: 700;
+}
+
+/* ── Buttons (matching landing.html .cta-btn) ──────────── */
+.btn {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  padding: 10px 20px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.btn:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.btn-primary {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.btn-primary:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.btn-sm {
+  font-size: 10px;
+  padding: 6px 12px;
+}
+
+.btn-danger {
+  border-color: var(--vermillion);
+  color: var(--vermillion);
+}
+
+.btn-danger:hover {
+  background: var(--vermillion);
+  color: var(--bg);
+}
+
+/* ── Form Elements ─────────────────────────────────────── */
+input, select, textarea {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-bottom: 0.5px solid var(--rule);
+  padding: 8px 0;
+  outline: none;
+  width: 100%;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-bottom-color: var(--ink);
+}
+
+label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 4px;
+}
+
+/* ── Trace Log (reasoning chain format from landing) ──── */
+.trace-log {
+  font-size: 12px;
+  line-height: 2.2;
+  padding: 32px;
+  border: 0.5px solid var(--rule);
+  background: var(--card-bg);
+}
+
+.log-line {
+  border-left: 0.5px solid var(--rule);
+  padding-left: 16px;
+  margin-left: 8px;
+}
+
+.log-line.rule {
+  font-weight: 700;
+  border-left: 1px solid var(--ink);
+}
+
+.log-line.conflict {
+  color: var(--vermillion);
+  border-left: 1px solid var(--vermillion);
+}
+
+.log-line.action {
+  font-weight: 700;
+  border-left: 2px solid var(--ink);
+  margin-top: 8px;
+}
+
+/* ── Methodology Steps (from landing) ──────────────────── */
+.step-num {
+  font-family: var(--mono);
+  font-size: 48px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 16px;
+  color: var(--rule);
+}
+
+.step-title {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 12px;
+}
+
+.step-desc {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── Task Block ────────────────────────────────────────── */
+.task-block {
+  position: relative;
+  padding: 16px 24px;
+  border-bottom: 0.5px solid var(--rule);
+  cursor: default;
+}
+
+.task-block:hover {
+  background: var(--card-bg);
+}
+
+/* CL-weight encoded as top border thickness */
+.task-block-border-1 { border-top: 1px solid var(--ink); }
+.task-block-border-2 { border-top: 1.5px solid var(--ink); }
+.task-block-border-3 { border-top: 2px solid var(--ink); }
+.task-block-border-4 { border-top: 2.5px solid var(--ink); }
+.task-block-border-5 { border-top: 3px solid var(--ink); }
+.task-block-border-6 { border-top: 3px solid var(--ink); }
+.task-block-border-7 { border-top: 3.5px solid var(--ink); }
+.task-block-border-8 { border-top: 3.5px solid var(--ink); }
+.task-block-border-9 { border-top: 4px solid var(--ink); }
+.task-block-border-10 { border-top: 4px solid var(--ink); }
+
+/* ── Chart (matching landing SVG style) ────────────────── */
+.chart-wrapper {
+  width: 100%;
+  position: relative;
+  border-bottom: 0.5px solid var(--ink);
+  margin-bottom: 8px;
+}
+
+.chart-grid {
+  stroke: var(--rule);
+  stroke-width: 0.5;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linejoin: miter;
+}
+
+.chart-fill {
+  fill: #E8E0D4;
+}
+
+.chart-fill-danger {
+  fill: var(--vermillion);
+}
+
+.chart-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--muted);
+  padding: 8px 0;
+  border-bottom: 0.5px solid var(--rule);
+}
+
+/* ── Status Tags ───────────────────────────────────────── */
+.status-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border: 0.5px solid;
+}
+
+.status-scheduled { border-color: var(--ink); color: var(--ink); }
+.status-inprogress { border-color: var(--state-inprogress); color: var(--state-inprogress); }
+.status-completed { border-color: var(--state-completed); color: var(--state-completed); }
+.status-skipped { border-color: var(--state-skipped); color: var(--state-skipped); }
+.status-sacrificed { border-color: var(--vermillion); color: var(--vermillion); }
+.status-unscheduled { border-color: var(--rule); color: var(--muted); }
+
+/* ── Score Display ─────────────────────────────────────── */
+.score-large {
+  font-family: var(--mono);
+  font-size: 48px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Schedule Grid ─────────────────────────────────────── */
+.time-gutter {
+  width: 56px;
+  flex-shrink: 0;
+}
+
+.time-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.hour-line {
+  border-top: 0.5px solid var(--rule);
+}
+
+/* ── Modal ─────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 26, 26, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.modal-content {
+  background: var(--bg);
+  border: 0.5px solid var(--rule);
+  max-width: 560px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 40px;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--rule); }
+
+/* ── Selection ─────────────────────────────────────────── */
+::selection {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+/* ── Responsive ────────────────────────────────────────── */
+@media (max-width: 900px) {
+  h1 { font-size: 28px; }
+  .score-large { font-size: 36px; }
+  .landing-hero-grid { grid-template-columns: 1fr !important; gap: 40px !important; }
+  .landing-hero-grid h1 { font-size: 42px !important; }
+  .landing-method-grid { grid-template-columns: 1fr 1fr !important; gap: 40px 0 !important; }
+  .landing-trace-grid { grid-template-columns: 1fr !important; gap: 40px !important; }
+}
+
+@media (max-width: 600px) {
+  h1 { font-size: 24px; }
+  .container { padding: 0 16px; }
+  .landing-method-grid { grid-template-columns: 1fr !important; }
+}
