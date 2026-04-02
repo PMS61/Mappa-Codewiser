@@ -17,13 +17,22 @@ export default function LandingPage() {
           <Link href="/" className="logo">
             Axiom
           </Link>
-          <Link
-            href="/onboarding"
-            className="nav-link"
-            style={{ borderBottom: "0.5px solid var(--ink)", paddingBottom: 2 }}
-          >
-            Get Started
-          </Link>
+          <div style={{ display: "flex", gap: 16 }}>
+            <Link
+              href="/login"
+              className="nav-link"
+              style={{ paddingBottom: 2 }}
+            >
+              Login
+            </Link>
+            <Link
+              href="/onboarding"
+              className="nav-link"
+              style={{ borderBottom: "0.5px solid var(--ink)", paddingBottom: 2 }}
+            >
+              Get Started
+            </Link>
+          </div>
         </div>
       </header>
       <div style={{ height: 60 }} />
@@ -357,6 +366,9 @@ export default function LandingPage() {
           >
             Start Setup &gt;
           </Link>
+          <p style={{ marginTop: 12, color: "var(--muted)" }}>
+            Already onboarded? <Link href="/login">Login</Link>
+          </p>
         </section>
       </main>
     </div>
