@@ -38,6 +38,27 @@ function DashboardContent() {
     <div style={{ minHeight: "100vh" }}>
       <Header />
 
+      {state.burnoutRisk !== "safe" && (
+        <div style={{ 
+          background: state.burnoutRisk === "critical" ? "var(--vermillion)" : "var(--card-bg)", 
+          color: state.burnoutRisk === "critical" ? "var(--bg)" : "var(--vermillion)", 
+          padding: "12px 24px", 
+          textAlign: "center", 
+          borderBottom: "0.5px solid var(--rule)",
+          fontFamily: "var(--mono)",
+          fontSize: 13,
+          fontWeight: 600
+        }}>
+          [!] BURNOUT RISK STATE: {state.burnoutRisk.toUpperCase()} — {
+            state.burnoutRisk === "critical" 
+              ? "Critical overload detected. High CL tasks are now blocked from scheduling." 
+              : state.burnoutRisk === "warning" 
+                ? "Elevated continuous load. Forced light day recommended within 72 hours."
+                : "Watch state active. Monitoring aggregate duration."
+          }
+        </div>
+      )}
+
       {/* ── Hero Section: Date + Stats ── */}
       <section className="container section-rule" style={{ paddingTop: 60, paddingBottom: 40 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 60, alignItems: "start" }}>
@@ -130,6 +151,76 @@ function DashboardContent() {
       >
         {/* Schedule List */}
         <div>
+          {/* Current Task Box */}
+          {(() => {
+            const now = new Date();
+            const currentSlot = Math.floor((now.getHours() * 60 + now.getMinutes()) / 15);
+            
+            const taskInCurrentSlot = scheduled.find(t => 
+              currentSlot >= (t.scheduledSlot?.startSlot ?? 0) && 
+              currentSlot < (t.scheduledSlot?.endSlot ?? 0)
+            );
+            
+            const currentTask = taskInCurrentSlot && taskInCurrentSlot.state !== "completed" ? taskInCurrentSlot : null;
+
+            if (!currentTask) {
+              return (
+                <div style={{ marginBottom: 48 }}>
+                  <div className="meta-text" style={{ marginBottom: 16 }}>Current Focus</div>
+                  <div style={{
+                    background: "var(--bg)",
+                    border: "0.5px dashed var(--muted)",
+                    padding: "32px 24px",
+                    textAlign: "center"
+                  }}>
+                    <div className="meta-text" style={{ marginBottom: 24, color: "var(--muted)" }}>
+                      Slot {currentSlot} Active · No tasks scheduled for current time blocks.
+                    </div>
+                    <div style={{ display: "flex", gap: 16, justifyContent: "center" }}>
+                      <button className="btn btn-primary" onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}>
+                        + Add Task
+                      </button>
+                      <button className="btn" onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}>
+                        + Log Recreational Activity
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <div style={{ marginBottom: 48 }}>
+                <div className="meta-text" style={{ marginBottom: 16 }}>Current Focus</div>
+                <div style={{
+                  background: "var(--card-bg)",
+                  border: "0.5px solid var(--rule)",
+                  borderLeft: `4px solid ${Math.abs(currentTask.cl) > 7 ? 'var(--vermillion)' : 'var(--ink)'}`,
+                  padding: "24px",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>{currentTask.name}</h3>
+                    <span className="meta-text">
+                      {slotToTime(currentTask.scheduledSlot!.startSlot)} – {slotToTime(currentTask.scheduledSlot!.endSlot)}
+                    </span>
+                  </div>
+                  <div className="meta-text" style={{ marginBottom: 24, display: "flex", gap: 12 }}>
+                    <span style={{ fontWeight: 700, color: "var(--ink)" }}>CL {currentTask.cl.toFixed(1)}</span>
+                    <span>·</span>
+                    <span>{formatDuration(currentTask.duration)}</span>
+                  </div>
+                  <button 
+                    className="btn btn-primary"
+                    style={{ width: "100%" }}
+                    onClick={() => dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId: currentTask.id, state: "completed" } })}
+                  >
+                    Mark as Complete ✓
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="meta-text" style={{ marginBottom: 16 }}>Today&apos;s Schedule</div>
 
           {scheduled.length === 0 ? (

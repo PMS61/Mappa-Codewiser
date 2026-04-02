@@ -9,6 +9,7 @@
 import { useState } from "react";
 import { AppProvider, useApp } from "@/lib/store";
 import { formatDateHeading } from "@/lib/engine";
+import { generateWeeklyInsight } from "@/lib/templates";
 import WeeklyMatrix from "@/components/WeeklyMatrix";
 
 type Tab = "daily" | "weekly";
@@ -176,7 +177,15 @@ function ReportContent() {
             <div className="trace-log" style={{ marginTop: 32, padding: 24 }}>
               <div className="meta-text" style={{ marginBottom: 12 }}>Weekly Insight</div>
               <div className="log-line rule" style={{ lineHeight: 1.8 }}>
-                Wednesday CL exceeded threshold. Recommend redistributing high-CL tasks earlier in the week.
+                {generateWeeklyInsight({
+                  compositeScore: 74,
+                  deadlineHitRate: 85,
+                  averageCLBalance: 29.2,
+                  maxCLSpikeDay: "Wednesday",
+                  maxCLSpikeValue: 38,
+                  lowEnergyDaysCount: 1,
+                  recommendedFocusShift: "Monday/Tuesday"
+                })}
               </div>
             </div>
           </>

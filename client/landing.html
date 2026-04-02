@@ -396,6 +396,12 @@
 
                 <!-- REPLACED: Understandable Stepped Area Chart -->
                 <div class="chart-wrapper">
+                    <!-- Direct Labels overlaid via HTML to avoid SVG stretch -->
+                    <div class="chart-label-danger" style="position: absolute; top: -15px; left: 40%;">[!] OVERLOADED</div>
+                    <div class="chart-label-danger" style="position: absolute; top: -15px; left: 57%;">[!] OVERLOADED</div>
+                    <div class="chart-label" style="position: absolute; top: 60px; left: 33.5%;">HIGH FOCUS</div>
+                    <div class="chart-label" style="position: absolute; top: 40px; left: 50%;">SLUMP</div>
+
                     <svg class="energy-chart" viewBox="0 0 1000 140" preserveAspectRatio="none">
                         <!-- Background Grid (Time) -->
                         <line x1="333" y1="0" x2="333" y2="120" class="chart-grid" />
@@ -413,22 +419,15 @@
                             L583,40 L604,15 L625,50 L666,80 L708,100 L750,110 L1000,120 
                             Z" class="chart-fill" />
 
-                        <!-- Overload Areas (Red Fill - Breaching the limit) -->
-                        <path d="M416,25 L437,0 L458,0 L458,25 Z" class="chart-fill-danger" />
-                        <path d="M583,40 L604,0 L625,0 L625,50 Z" class="chart-fill-danger" />
+                        <!-- Overload Areas (Red Fill - Breaching the limit exactly at intersections) -->
+                        <path d="M424.4,15 L437,0 L449.6,15 Z" class="chart-fill-danger" />
+                        <path d="M596.1,15 L604,0 L610.3,15 Z" class="chart-fill-danger" />
 
                         <!-- Raw Data Line (Black Top Border) -->
                         <path d="
                             M0,120 L166,120 L250,100 L333,80 L375,50 L416,25 
                             L437,0 L458,25 L500,60 L541,70 
                             L583,40 L604,0 L625,50 L666,80 L708,100 L750,110 L1000,120" class="chart-line" />
-
-                        <!-- Direct Labels for Clarity -->
-                        <text x="430" y="-5" class="chart-label-danger">[!] OVERLOADED</text>
-                        <text x="597" y="-5" class="chart-label-danger">[!] OVERLOADED</text>
-
-                        <text x="335" y="75" class="chart-label">HIGH FOCUS</text>
-                        <text x="500" y="55" class="chart-label">SLUMP</text>
                     </svg>
                 </div>
 

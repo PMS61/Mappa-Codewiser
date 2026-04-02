@@ -104,17 +104,21 @@ export default function BandwidthCurve() {
 
           {/* Main data line */}
           <path d={linePath} className="chart-line" />
-
-          {/* Threshold label */}
-          <text
-            x={WIDTH - 4}
-            y={thresholdY - 6}
-            textAnchor="end"
-            style={{ fontFamily: "var(--mono)", fontSize: 9, fill: "var(--vermillion)", fontWeight: 700 }}
-          >
-            [!] CL THRESHOLD
-          </text>
         </svg>
+
+        {/* Threshold label overlaid via HTML */}
+        <div style={{
+          position: "absolute",
+          top: thresholdY - 14,
+          right: 4,
+          fontFamily: "var(--mono)",
+          fontSize: 9,
+          fill: "var(--vermillion)",
+          color: "var(--vermillion)",
+          fontWeight: 700
+        }}>
+          [!] CL THRESHOLD
+        </div>
       </div>
 
       <div className="chart-legend">

@@ -34,6 +34,7 @@ import {
   generatePlacementReasoning,
   durationToSlots,
 } from "./engine";
+import { generateDailyInsight } from "./templates";
 
 // ── State Shape ───────────────────────────────────────────
 
@@ -81,7 +82,8 @@ type Action =
   | { type: "RUN_SCHEDULER" }
   | { type: "SET_CONFLICT"; payload: ScheduleConflict | null }
   | { type: "RESOLVE_CONFLICT"; payload: { taskId: string; resolution: string } }
-  | { type: "GENERATE_REPORT" };
+  | { type: "GENERATE_REPORT" }
+  | { type: "SCHEDULE_TASK_MANUALLY"; payload: { taskId: string; startSlot: number, day: number } };
 
 // ── ID Generator ──────────────────────────────────────────
 
@@ -329,7 +331,31 @@ function reducer(state: AppState, action: Action): AppState {
     }
 
     case "RESOLVE_CONFLICT": {
-      return { ...state, activeConflict: null };
+      const { taskId, resolution } = action.payload;
+      let newTasks = [...state.tasks];
+      const tIdx = newTasks.findIndex(t => t.id === taskId);
+      let stepMessage = `CONFLICT RESOLVED: ${resolution.toUpperCase()}`;
+
+      if (tIdx >= 0) {
+        const t = newTasks[tIdx];
+        if (resolution === "sacrifice") {
+          newTasks[tIdx] = { ...t, cl: t.cl * 0.7, state: "sacrificed", clBreakdown: { ...t.clBreakdown, total: t.cl * 0.7 } };
+          stepMessage = `Depth Sacrificed for "${t.name}". CL reduced by 30% from ${t.cl.toFixed(1)} to ${(t.cl * 0.7).toFixed(1)}.`;
+        } else if (resolution === "extend_deadline") {
+          newTasks[tIdx] = { ...t, state: "deadline_extended" };
+          stepMessage = `Deadline Extended for "${t.name}" (Allowed due to low/normal priority).`;
+        } else if (resolution === "defer") {
+          newTasks[tIdx] = { ...t, state: "rescheduled" };
+          stepMessage = `Task "${t.name}" deferred to next scheduling loop.`;
+        }
+      }
+
+      return { 
+        ...state, 
+        tasks: newTasks, 
+        activeConflict: null,
+        reasoningChain: [...state.reasoningChain, { number: state.reasoningChain.length + 1, text: stepMessage, isRule: true }]
+      };
     }
 
     case "GENERATE_REPORT": {
@@ -349,12 +375,47 @@ function reducer(state: AppState, action: Action): AppState {
         burnoutRiskTrend: state.burnoutRisk,
         topInsight: scheduled.length === 0
           ? "No tasks scheduled. Add tasks and run the scheduler."
-          : adherence > 80
-            ? "Strong adherence today. Productive hours align with high-CL placement."
-            : "Adherence below target. Consider reducing tomorrow's CL budget.",
+          : generateDailyInsight({
+              adherencePercentage: +adherence.toFixed(0),
+              totalCL: tasks.reduce((sum, t) => sum + Math.abs(t.cl), 0),
+              highCLTasksPlacedInPeakCount: scheduled.filter(t => Math.abs(t.cl) > 5).length,
+              unresolvedConflictsCount: state.activeConflict ? 1 : 0,
+              contextSwitchPenalty: 3.5, // Mock calculated penalty
+              burnoutRisk: state.burnoutRisk,
+              energyDeficit: 4
+            }),
       };
 
       return { ...state, dailyReport: report, dayPhase: "complete" };
+    }
+
+    case "SCHEDULE_TASK_MANUALLY": {
+      const task = state.tasks.find(t => t.id === action.payload.taskId);
+      if (!task) return state;
+      const slotsNeeded = durationToSlots(task.duration);
+      
+      const newReasoning: ReasoningStep = {
+        number: state.reasoningChain.length + 1,
+        text: `MANUAL SCHEDULING: User dragged "${task.name}" into Matrix view at day ${action.payload.day}, slot ${action.payload.startSlot}.`,
+        isAction: true,
+        relatedTaskId: task.id
+      };
+
+      return {
+        ...state,
+        tasks: state.tasks.map(t => t.id === action.payload.taskId ? {
+          ...t,
+          state: "scheduled" as TaskState,
+          scheduledSlot: {
+            startSlot: action.payload.startSlot,
+            endSlot: action.payload.startSlot + slotsNeeded,
+            day: action.payload.day,
+            fitnessScore: 5.0, // Arbitrary for manual override
+            reasoningSteps: [newReasoning]
+          }
+        } : t),
+        reasoningChain: [...state.reasoningChain, newReasoning]
+      };
     }
 
     default:

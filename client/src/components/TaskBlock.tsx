@@ -6,6 +6,7 @@
 
 "use client";
 
+import { useState, useEffect } from "react";
 import { useApp } from "@/lib/store";
 import { slotToTime, formatDuration, clToBorderClass } from "@/lib/engine";
 import type { Task } from "@/lib/types";
@@ -20,6 +21,23 @@ export default function TaskBlock({ task, isCompact = false }: TaskBlockProps) {
   const isHighlighted = state.highlightedTaskId === task.id;
   const isRecreational = task.type === "recreational";
   const borderClass = clToBorderClass(task.cl);
+
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    let interval: any;
+    if (task.state === "in_progress") {
+      interval = setInterval(() => setElapsedSeconds(s => s + 1), 1000);
+    }
+    return () => clearInterval(interval);
+  }, [task.state]);
+
+  const formatTime = (totalSeconds: number) => {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+    const s = (totalSeconds % 60).toString().padStart(2, '0');
+    return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
+  };
 
   const timeRange = task.scheduledSlot
     ? `${slotToTime(task.scheduledSlot.startSlot)}–${slotToTime(task.scheduledSlot.endSlot)}`
@@ -63,12 +81,19 @@ export default function TaskBlock({ task, isCompact = false }: TaskBlockProps) {
           </div>
         </div>
 
-        {/* Right: State tag */}
-        <span className={`status-tag status-${task.state === "in_progress" ? "inprogress" : task.state}`}>
-          {task.state === "in_progress"
-            ? "Active"
-            : task.state.replace(/_/g, " ")}
-        </span>
+        {/* Right: State tag & Timer */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+          <span className={`status-tag status-${task.state === "in_progress" ? "inprogress" : task.state}`}>
+            {task.state === "in_progress"
+              ? "Active"
+              : task.state.replace(/_/g, " ")}
+          </span>
+          {(task.state === "in_progress" || elapsedSeconds > 0) && (
+            <div style={{ fontFamily: "var(--mono)", fontSize: 13, fontWeight: 700, color: task.state === "in_progress" ? "var(--vermillion)" : "var(--ink)" }}>
+              {formatTime(elapsedSeconds)}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Expanded detail on hover */}
@@ -80,26 +105,30 @@ export default function TaskBlock({ task, isCompact = false }: TaskBlockProps) {
           </div>
 
           {/* Actions */}
-          {task.state === "scheduled" && (
+          {(task.state === "scheduled" || task.state === "in_progress") && (
             <div style={{ display: "flex", gap: 8, marginTop: 12, marginLeft: 24 }}>
-              <button
-                className="btn btn-sm"
-                onClick={() => dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId: task.id, state: "in_progress" } })}
-              >
-                Start
-              </button>
+              {task.state === "scheduled" && (
+                <button
+                  className="btn btn-sm"
+                  onClick={() => dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId: task.id, state: "in_progress" } })}
+                >
+                  START
+                </button>
+              )}
               <button
                 className="btn btn-sm"
                 onClick={() => dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId: task.id, state: "completed" } })}
               >
-                Complete
+                COMPLETE
               </button>
-              <button
-                className="btn btn-sm"
-                onClick={() => dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId: task.id, state: "skipped" } })}
-              >
-                Skip
-              </button>
+              {task.state === "scheduled" && (
+                <button
+                  className="btn btn-sm"
+                  onClick={() => dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId: task.id, state: "skipped" } })}
+                >
+                  SKIP
+                </button>
+              )}
             </div>
           )}
         </div>

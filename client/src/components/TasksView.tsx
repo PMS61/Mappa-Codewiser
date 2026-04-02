@@ -1,40 +1,37 @@
 /* ═══════════════════════════════════════════════════════════
-   THE AXIOM — Tasks View
-   Landing-page aesthetic: clean table with generous spacing,
-   meta-text labels, hover reveals.
+   THE AXIOM — Interactive Scheduler View
+   Landing-page aesthetic: clean tabular drag/drop UI, 
+   RAG input field, and the 96x7 Matrix.
    ═══════════════════════════════════════════════════════════ */
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AppProvider, useApp } from "@/lib/store";
-import { formatDuration, slotToTime } from "@/lib/engine";
+import MatrixView from "./MatrixView";
 import { TASK_TYPE_LABELS } from "@/lib/types";
-import type { TaskState, TaskType } from "@/lib/types";
-import AddTaskModal from "./AddTaskModal";
 
-type SortField = "cl" | "time" | "priority" | "name";
-type FilterState = "all" | TaskState;
+import { DndContext, DragEndEvent } from "@dnd-kit/core";
 
-function TasksContent() {
+function SchedulerContent() {
   const { state, dispatch } = useApp();
-  const [sortBy, setSortBy] = useState<SortField>("time");
-  const [filterState, setFilterState] = useState<FilterState>("all");
+  const [selectedTask, setSelectedTask] = useState<any>(null);
 
-  let filtered = state.tasks;
-  if (filterState !== "all") filtered = filtered.filter((t) => t.state === filterState);
-
-  const sorted = [...filtered].sort((a, b) => {
-    switch (sortBy) {
-      case "cl": return Math.abs(b.cl) - Math.abs(a.cl);
-      case "time": return (a.scheduledSlot?.startSlot ?? 999) - (b.scheduledSlot?.startSlot ?? 999);
-      case "priority": return ({ high: 0, normal: 1, low: 2 }[a.priority]) - ({ high: 0, normal: 1, low: 2 }[b.priority]);
-      case "name": return a.name.localeCompare(b.name);
-      default: return 0;
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (over && over.id) {
+      const dropId = String(over.id);
+      if (dropId.startsWith("slot-")) {
+        const parts = dropId.split("-");
+        const day = parseInt(parts[1], 10);
+        const slot = parseInt(parts[2], 10);
+        dispatch({
+          type: "SCHEDULE_TASK_MANUALLY",
+          payload: { taskId: String(active.id), startSlot: slot, day }
+        });
+      }
     }
-  });
-
-  const totalCL = state.tasks.filter((t) => t.cl > 0).reduce((s, t) => s + t.cl, 0);
+  }
 
   return (
     <div style={{ minHeight: "100vh" }}>
@@ -44,123 +41,112 @@ function TasksContent() {
           <a href="/" className="logo">Axiom</a>
           <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
             <a href="/" className="nav-link">Schedule</a>
-            <a href="/tasks" className="nav-link active">Tasks</a>
+            <a href="/tasks" className="nav-link active">Tasks / Matrix</a>
             <a href="/report" className="nav-link">Report</a>
-            <button className="btn btn-sm" onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}>+ Task</button>
           </div>
         </div>
       </header>
       <div style={{ height: 60 }} />
 
-      {/* Hero */}
-      <section className="container section-rule" style={{ paddingTop: 60, paddingBottom: 40 }}>
-        <div className="meta-text" style={{ marginBottom: 16 }}>Task Management</div>
-        <h1 style={{ marginBottom: 16 }}>All Tasks</h1>
-        <p style={{ color: "var(--muted)", maxWidth: 400 }}>
-          {state.tasks.length} tasks in pool · Total CL {totalCL.toFixed(1)}
-        </p>
-      </section>
-
-      {/* Filters */}
-      <section className="container section-rule" style={{ padding: "12px 24px", display: "flex", gap: 24, alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <label style={{ marginBottom: 0, whiteSpace: "nowrap" }}>State</label>
-          <select value={filterState} onChange={(e) => setFilterState(e.target.value as FilterState)} style={{ width: "auto", borderBottom: "none" }}>
-            <option value="all">All</option>
-            <option value="unscheduled">Unscheduled</option>
-            <option value="scheduled">Scheduled</option>
-            <option value="in_progress">In Progress</option>
-            <option value="completed">Completed</option>
-            <option value="skipped">Skipped</option>
-          </select>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <label style={{ marginBottom: 0, whiteSpace: "nowrap" }}>Sort</label>
-          <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortField)} style={{ width: "auto", borderBottom: "none" }}>
-            <option value="time">Time</option>
-            <option value="cl">CL (High First)</option>
-            <option value="priority">Priority</option>
-            <option value="name">Name</option>
-          </select>
-        </div>
-      </section>
-
-      {/* Task table */}
-      <main className="container" style={{ paddingTop: 24, paddingBottom: 80 }}>
-        {/* Header row */}
-        <div className="section-rule" style={{
-          display: "grid", gridTemplateColumns: "48px 1fr 100px 80px 80px 80px",
-          gap: 8, padding: "8px 0",
-        }}>
-          <span className="meta-text">CL</span>
-          <span className="meta-text">Task</span>
-          <span className="meta-text">Time</span>
-          <span className="meta-text">Duration</span>
-          <span className="meta-text">Type</span>
-          <span className="meta-text">State</span>
-        </div>
-
-        {sorted.map((task) => {
-          const timeRange = task.scheduledSlot
-            ? `${slotToTime(task.scheduledSlot.startSlot)}–${slotToTime(task.scheduledSlot.endSlot)}`
-            : "—";
-          const isHovered = state.highlightedTaskId === task.id;
-
-          return (
-            <div
-              key={task.id}
-              className="section-rule"
-              style={{
-                display: "grid",
-                gridTemplateColumns: "48px 1fr 100px 80px 80px 80px",
-                gap: 8,
-                padding: "12px 0",
-                alignItems: "center",
-                background: isHovered ? "var(--card-bg)" : undefined,
-                cursor: "default",
-              }}
-              onMouseEnter={() => dispatch({ type: "HIGHLIGHT_TASK", payload: task.id })}
-              onMouseLeave={() => dispatch({ type: "HIGHLIGHT_TASK", payload: null })}
-            >
-              <span style={{
-                fontWeight: 700,
-                fontSize: 16,
-                color: task.type === "recreational"
-                  ? "var(--safe)"
-                  : Math.abs(task.cl) > 7 ? "var(--vermillion)" : "var(--ink)",
-              }}>
-                {task.cl.toFixed(1)}
-              </span>
-
-              <div>
-                <div style={{ fontWeight: 500, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {task.name}
-                </div>
-                {isHovered && (
-                  <div className="meta-text" style={{ marginTop: 2 }}>
-                    {task.clBreakdown.baseDifficulty} × {task.clBreakdown.durationWeight} × {task.clBreakdown.deadlineUrgency} × {task.clBreakdown.typeMultiplier} × {task.clBreakdown.priorityWeight}
-                  </div>
-                )}
-              </div>
-
-              <span className="meta-text">{timeRange}</span>
-              <span className="meta-text">{formatDuration(task.duration)}</span>
-              <span className="meta-text">{TASK_TYPE_LABELS[task.type]}</span>
-              <span className={`status-tag status-${task.state === "in_progress" ? "inprogress" : task.state}`}>
-                {task.state.replace(/_/g, " ")}
-              </span>
-            </div>
-          );
-        })}
-
-        {sorted.length === 0 && (
-          <div style={{ padding: "40px 0", textAlign: "center", color: "var(--muted)" }}>
-            No tasks match current filters.
+      {/* RAG Input Section */}
+      <section className="container section-rule" style={{ paddingTop: 40, paddingBottom: 40 }}>
+        <div className="meta-text" style={{ marginBottom: 16 }}>RAG-Powered Extraction</div>
+        <h2 style={{ marginBottom: 16 }}>Generate Tasks from Context</h2>
+        
+        <div style={{ background: "var(--card-bg)", border: "0.5px solid var(--rule)", padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+          <textarea 
+            placeholder="Paste syllabus, email thread, or meeting notes here. Axiom will extract tasks and assign appropriate CL scores..."
+            style={{ 
+              width: "100%", 
+              minHeight: 120, 
+              border: "none", 
+              background: "transparent",
+              resize: "vertical",
+              fontFamily: "var(--mono)",
+              fontSize: 13,
+              outline: "none"
+            }}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "0.5px solid var(--rule)", paddingTop: 16 }}>
+            <span className="meta-text" style={{ color: "var(--muted)" }}>Model: Axiom-Extraction-v1 (Streaming)</span>
+            <button className="btn btn-primary">Extract Tasks &gt;</button>
           </div>
-        )}
-      </main>
+        </div>
+      </section>
 
-      <AddTaskModal />
+      {/* Interactive Matrix Drag/Drop Panel */}
+      <DndContext onDragEnd={handleDragEnd}>
+        <main className="container" style={{ paddingTop: 40, paddingBottom: 80 }}>
+          
+          {/* Full Width Matrix */}
+          <div>
+            <div className="meta-text" style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>Global 96×7 Schedule Matrix</span>
+              <button className="btn btn-sm btn-primary" onClick={() => dispatch({ type: "RUN_SCHEDULER" })}>Auto Schedule</button>
+            </div>
+            <MatrixView onTaskClick={setSelectedTask} />
+          </div>
+
+        </main>
+      </DndContext>
+
+      {/* Task Preview Modal Right Panel */}
+      {selectedTask && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: 400,
+          background: "var(--card-bg)",
+          borderLeft: "0.5px solid var(--rule)",
+          zIndex: 100000,
+          padding: "32px 24px",
+          boxShadow: "-10px 0 40px rgba(0,0,0,0.1)",
+          overflowY: "auto"
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 32 }}>
+            <h2 style={{ fontSize: 24, margin: 0, fontWeight: 700 }}>Task Details</h2>
+            <button 
+              style={{ cursor: "pointer", background: "transparent", border: "none", fontSize: 20 }}
+              onClick={() => setSelectedTask(null)}
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="meta-text" style={{ marginBottom: 12 }}>Task Name</div>
+          <h3 style={{ fontSize: 18, marginBottom: 32, fontWeight: 500 }}>{selectedTask.name}</h3>
+
+          <div className="meta-text" style={{ marginBottom: 16 }}>Properties</div>
+          <div className="trace-log" style={{ padding: 24, marginBottom: 32 }}>
+            <div className="log-line rule">State: {selectedTask.state.toUpperCase()}</div>
+            <div className="log-line rule">Type: {selectedTask.type}</div>
+            <div className="log-line rule">Duration: {selectedTask.duration}m</div>
+            <div className="log-line rule">Priority: {selectedTask.priority}</div>
+            <div className="log-line rule">Difficulty: {selectedTask.difficulty}/10</div>
+          </div>
+
+          <div className="meta-text" style={{ marginBottom: 16 }}>Cognitive Load Score</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 24 }}>
+            <span style={{ fontSize: 32, fontWeight: 700, color: Math.abs(selectedTask.cl) > 7 ? 'var(--vermillion)' : 'var(--ink)' }}>
+              {selectedTask.cl.toFixed(2)}
+            </span>
+            <span className="meta-text">Base CL</span>
+          </div>
+
+          {selectedTask.clBreakdown && (
+            <>
+              <div className="meta-text" style={{ marginBottom: 12 }}>Load Breakdown</div>
+              <div style={{ border: "0.5px solid var(--rule)", padding: "16px", background: "var(--bg)" }}>
+                <pre style={{ margin: 0, fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)", whiteSpace: "pre-wrap" }}>
+                  {JSON.stringify(selectedTask.clBreakdown, null, 2)}
+                </pre>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -168,7 +154,7 @@ function TasksContent() {
 export default function TasksView() {
   return (
     <AppProvider>
-      <TasksContent />
+      <SchedulerContent />
     </AppProvider>
   );
 }

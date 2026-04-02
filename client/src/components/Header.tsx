@@ -17,7 +17,7 @@ export default function Header() {
     <>
       <header className="nav">
         <div className="nav-inner">
-          <a href="/dashboard" className="logo">Axiom</a>
+          <a href="/" className="logo">Axiom</a>
 
           <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
             {/* Energy indicator — compact */}
@@ -45,6 +45,7 @@ export default function Header() {
             {/* Nav links */}
             <a href="/tasks" className="nav-link">Tasks</a>
             <a href="/report" className="nav-link">Report</a>
+            <a href="/tutorial" className="nav-link">Guide</a>
 
             <button
               className="btn btn-sm"
