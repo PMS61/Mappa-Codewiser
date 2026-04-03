@@ -9,6 +9,10 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { registerUser } from "@/app/actions/auth";
+import {
+  buildStoredProfileFromOnboarding,
+  writeStoredUserProfile,
+} from "@/lib/userProfileStorage";
 
 type RoleIndex = 0 | 1 | 2 | 3 | 4;
 type SessionStyleIndex = 0 | 1 | 2 | 3;
@@ -705,6 +709,15 @@ export default function OnboardingFlow() {
     };
   }
 
+  function saveUserProfile(payload: OnboardingSubmission) {
+    const profile = buildStoredProfileFromOnboarding(
+      accountName,
+      accountEmail,
+      payload,
+    );
+    writeStoredUserProfile(profile);
+  }
+
   async function submitOnboarding() {
     setSubmitError("");
     const payload = buildSubmission();
@@ -724,6 +737,7 @@ export default function OnboardingFlow() {
       return;
     }
 
+    saveUserProfile(payload);
     router.push("/dashboard");
   }
 

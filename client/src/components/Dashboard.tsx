@@ -6,19 +6,34 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
-import { AppProvider, useApp } from "@/lib/store";
-import { formatDateHeading, slotToTime, formatDuration } from "@/lib/engine";
-import Header from "@/components/Header";
-import BandwidthCurve from "@/components/BandwidthCurve";
-import TaskBlock from "@/components/TaskBlock";
-import ReasoningChain from "@/components/ReasoningChain";
-import AddTaskModal from "@/components/AddTaskModal";
-import ConflictPanel from "@/components/ConflictPanel";
-import { getTasks, deleteTask, syncTasks, updateTaskStateAndSlot } from "@/app/actions/tasks";
+import { useEffect, useState } from "react";
 import { getUserProfile } from "@/app/actions/auth";
+import {
+  deleteTask,
+  getTasks,
+  syncTasks,
+  updateTaskStateAndSlot,
+} from "@/app/actions/tasks";
+import AddTaskModal from "@/components/AddTaskModal";
+import BandwidthCurve from "@/components/BandwidthCurve";
+import ConflictPanel from "@/components/ConflictPanel";
+import Header from "@/components/Header";
+import ReasoningChain from "@/components/ReasoningChain";
+import TaskBlock from "@/components/TaskBlock";
+import {
+  formatDateHeading,
+  formatDuration,
+  runSchedulingAlgorithm,
+  slotToTime,
+} from "@/lib/engine";
+import { AppProvider, useApp } from "@/lib/store";
 import { TASK_TYPE_LABELS } from "@/lib/types";
-import { runSchedulingAlgorithm } from "@/lib/engine";
+import {
+  readStoredUserProfile,
+  toDashboardProfilePayload,
+  toStoredUserProfileFromServerUser,
+  writeStoredUserProfile,
+} from "@/lib/userProfileStorage";
 
 function DashboardContent() {
   const { state, dispatch } = useApp();
@@ -44,6 +59,14 @@ function DashboardContent() {
 
   useEffect(() => {
     async function load() {
+      const localProfile = readStoredUserProfile();
+      if (localProfile) {
+        dispatch({
+          type: "SET_USER_PROFILE",
+          payload: toDashboardProfilePayload(localProfile),
+        });
+      }
+
       const { tasks, error } = await getTasks();
       if (!error && tasks) {
         dispatch({ type: "SET_TASKS", payload: tasks });
@@ -51,6 +74,16 @@ function DashboardContent() {
 
       const { user, error: profileErr } = await getUserProfile();
       if (!profileErr && user) {
+        const normalizedProfile = toStoredUserProfileFromServerUser(user);
+        if (normalizedProfile) {
+          writeStoredUserProfile(normalizedProfile);
+          dispatch({
+            type: "SET_USER_PROFILE",
+            payload: toDashboardProfilePayload(normalizedProfile),
+          });
+          return;
+        }
+
         dispatch({ type: "SET_USER_PROFILE", payload: user });
       }
     }
