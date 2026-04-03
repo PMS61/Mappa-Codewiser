@@ -6,12 +6,44 @@
 
 "use client";
 
+import { useState, useEffect } from "react";
+import { usePathname } from "next/navigation";
 import { useApp } from "@/lib/store";
 import { ENERGY_LABELS } from "@/lib/types";
 import type { EnergyLevel } from "@/lib/types";
 
 export default function Header() {
+  const pathname = usePathname();
   const { state, dispatch } = useApp();
+  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("axiom-theme");
+    if (saved === "light" || saved === "dark") {
+      setTheme(saved);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Sync theme to root element on mount and change
+    if (theme !== "system") {
+      document.documentElement.setAttribute("data-theme", theme);
+      localStorage.setItem("axiom-theme", theme);
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+      localStorage.removeItem("axiom-theme");
+    }
+  }, [theme]);
+
+  const toggleTheme = () => {
+    if (theme === "system") {
+      setTheme(window.matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark");
+    } else if (theme === "dark") {
+      setTheme("light");
+    } else {
+      setTheme("system"); // cycle back
+    }
+  };
 
   return (
     <>
@@ -19,7 +51,7 @@ export default function Header() {
         <div className="nav-inner">
           <a href="/" className="logo">Axiom</a>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
+          <div className="nav-links-container" style={{ display: "flex", alignItems: "center", gap: 32 }}>
             {/* Energy indicator — compact */}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span className="meta-text">{ENERGY_LABELS[state.energyLevel]}</span>
@@ -43,17 +75,25 @@ export default function Header() {
             </div>
 
             {/* Nav links */}
-            <a href="/tasks" className="nav-link">Tasks</a>
-            <a href="/report" className="nav-link">Report</a>
-            <a href="/tutorial" className="nav-link">Guide</a>
-            <a href="/profile" className="nav-link">Profile</a>
-
+            <a href="/dashboard" className={`nav-link ${pathname === '/dashboard' ? 'active' : ''}`}>Dashboard</a>
+            <a href="/tasks" className={`nav-link ${pathname === '/tasks' ? 'active' : ''}`}>Tasks & Matrix</a>
+            <a href="/report" className={`nav-link ${pathname === '/report' ? 'active' : ''}`}>Report</a>
+            <a href="/tutorial" className={`nav-link ${pathname === '/tutorial' ? 'active' : ''}`}>Guide</a>
+            <a href="/profile" className={`nav-link ${pathname === '/profile' ? 'active' : ''}`}>Profile</a>
             <button
               className="btn btn-sm"
               style={{ marginLeft: 8 }}
               onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}
             >
               + Task
+            </button>
+            <button 
+              onClick={toggleTheme}
+              className="nav-link"
+              style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", marginLeft: 8 }}
+              title="Toggle Theme"
+            >
+              {theme === "system" ? "🌓" : theme === "dark" ? "🌙" : "☀️"}
             </button>
           </div>
         </div>

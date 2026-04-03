@@ -195,7 +195,9 @@ export interface ScheduleConflict {
 
 // ── Slot Fitness Candidate ────────────────────────────────
 export interface SlotCandidate {
-  slotIndex: number;
+  slotIndex: number; // Single-day relative
+  startSlot: number; // Multi-day aware
+  dayIdx: number;
   fitnessScore: number;
   bandwidthRemaining: number;
   productiveHourBonus: number;

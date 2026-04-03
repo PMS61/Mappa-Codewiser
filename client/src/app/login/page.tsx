@@ -12,10 +12,7 @@ export default function LoginPage() {
     setError("");
     setIsSubmitting(true);
 
-    const email = String(formData.get("email") ?? "");
-    const password = String(formData.get("password") ?? "");
-    const result = await loginUser({ email, password });
-
+    const result = await loginUser(formData);
     if (result?.error) {
       setError(result.error);
       setIsSubmitting(false);

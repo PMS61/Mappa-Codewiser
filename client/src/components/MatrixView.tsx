@@ -6,7 +6,7 @@
 
 "use client";
 
-import { slotToTime } from "@/lib/engine";
+import { slotToTime, isSlotBlocked } from "@/lib/engine";
 import { useApp } from "@/lib/store";
 
 import { useDroppable, useDraggable } from "@dnd-kit/core";
@@ -68,13 +68,68 @@ function DraggableMatrixTask({ task, durationSlots, onTaskClick }: { task: any, 
   );
 }
 
-function DroppableSlot({ dayIdx, slot, tasksStartingHere, isHour, onTaskClick }: { dayIdx: number, slot: number, tasksStartingHere: any[], isHour: boolean, onTaskClick?: (task: any) => void }) {
+function DroppableSlot({ dayIdx, actualDayOfWeek, slot, tasksStartingHere, isHour, onTaskClick }: { dayIdx: number, actualDayOfWeek: number, slot: number, tasksStartingHere: any[], isHour: boolean, onTaskClick?: (task: any) => void }) {
+  const { state } = useApp();
   const id = `slot-${dayIdx}-${slot}`;
   const { isOver, setNodeRef } = useDroppable({ id });
 
-  // MOCK: Highlight Matrix grid blocks for statistically "Confirmed" productive focus hours.
-  // In production, this pulls from the 96x7 DB array's "productiveHourScore".
-  const isConfirmedPeak = (slot >= 40 && slot < 48) && (dayIdx === 1 || dayIdx === 3);
+  const profile = state.userProfile;
+  const slotMinutes = slot * 15;
+
+  const blocked = isSlotBlocked(slot, actualDayOfWeek, profile);
+  let isSleep = false;
+  let blockLabel = "";
+
+  if (profile) {
+    const { wakeTime, sleepTime } = profile;
+    if (wakeTime !== null && sleepTime !== null) {
+      if (sleepTime > wakeTime) {
+        if (slotMinutes >= sleepTime || slotMinutes < wakeTime) isSleep = true;
+      } else {
+        if (slotMinutes >= sleepTime && slotMinutes < wakeTime) isSleep = true;
+      }
+    }
+
+    if (blocked && !isSleep) {
+       const commitment = profile.fixedCommitments?.find((c: any) => c.days.includes(actualDayOfWeek) && slotMinutes >= c.start_min && slotMinutes < c.end_min);
+       if (commitment) blockLabel = commitment.title;
+    }
+  }
+
+  let isPeak = false;
+  let isLow = false;
+  if (!blocked) {
+    for (const w of (profile?.peakFocusWindows || [])) {
+      if (slotMinutes >= w.start_min && slotMinutes < w.end_min) { isPeak = true; break; }
+    }
+    if (!isPeak) {
+      for (const w of (profile?.lowEnergyWindows || [])) {
+        if (slotMinutes >= w.start_min && slotMinutes < w.end_min) { isLow = true; break; }
+      }
+    }
+  }
+
+  // Visual state
+  let bgColor = "transparent";
+  let pattern = "none";
+
+  if (isSleep) {
+    pattern = "repeating-linear-gradient(45deg, transparent, transparent 6px, var(--rule) 6px, var(--rule) 7px)";
+  } else if (blocked) {
+    bgColor = "var(--blocked-bg)";
+    pattern = `repeating-linear-gradient(-45deg, transparent, transparent 6px, var(--rule) 6px, var(--rule) 6.5px)`;
+  } else if (isPeak) {
+    bgColor = "var(--peak-bg)";
+    // Dots pattern for peak focus windows
+    pattern = "radial-gradient(var(--rule) 0.5px, transparent 0.5px)";
+  } else if (isLow) {
+    bgColor = "var(--low-bg)";
+  }
+
+  if (isOver) {
+    bgColor = blocked ? "var(--vermillion)" : "var(--bg-invert)";
+    pattern = "none";
+  }
 
   return (
     <div 
@@ -82,17 +137,15 @@ function DroppableSlot({ dayIdx, slot, tasksStartingHere, isHour, onTaskClick }:
       className={`rule-left ${isHour ? "hour-line" : ""}`}
       style={{
         height: 30, // represents 15 mins
-        background: isOver 
-          ? "var(--bg-invert)" 
-          : isConfirmedPeak 
-            ? "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(26,26,26,0.03) 4px, rgba(26,26,26,0.03) 5px)" 
-            : "transparent",
+        background: pattern !== "none" ? `${bgColor} ${pattern}` : bgColor,
+        backgroundSize: "12px 12px",
         position: "relative",
-        transition: "background 0.2s",
-        cursor: "crosshair"
+        transition: "background 0.2s, opacity 0.2s",
+        cursor: blocked ? "not-allowed" : "crosshair",
+        opacity: isSleep ? 0.6 : 1,
+        borderBottom: isHour ? "0.5px solid var(--rule)" : "none",
       }}
-      onMouseEnter={(e) => !isOver && (e.currentTarget.style.background = "rgba(0,0,0,0.02)")}
-      onMouseLeave={(e) => !isOver && (e.currentTarget.style.background = "transparent")}
+      title={isSleep ? "Sleep Wakeup/Windown Window" : blocked ? `Blocked: ${blockLabel}` : isPeak ? "Peak Focus Window" : isLow ? "Low Energy Window" : undefined}
     >
       {tasksStartingHere.map(task => {
         const durationSlots = task.scheduledSlot!.endSlot - task.scheduledSlot!.startSlot;
@@ -106,17 +159,16 @@ export default function MatrixView({ onTaskClick }: { onTaskClick?: (task: any) 
   const { state } = useApp();
   
   const today = new Date();
-  const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday...
-  const startOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-  const startOfWeek = new Date(today);
-  startOfWeek.setDate(today.getDate() + startOffset);
-
+  
   const days = Array.from({ length: 7 }).map((_, i) => {
-    const d = new Date(startOfWeek);
-    d.setDate(startOfWeek.getDate() + i);
-    const dayName = d.toLocaleDateString("en-US", { weekday: 'short' });
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    const dayName = d.toLocaleDateString("en-US", { weekday: 'short' }).toUpperCase();
     const dateStr = `${d.getDate()}/${d.getMonth() + 1}`;
-    return `${dayName} ${dateStr}`;
+    return {
+      label: `${dayName} ${dateStr}`,
+      dayOfWeek: d.getDay()
+    };
   });
   
   // Render hours 6:00 to 22:00 for the main view to keep it sane, but represent the full grid.
@@ -135,8 +187,8 @@ export default function MatrixView({ onTaskClick }: { onTaskClick?: (task: any) 
         }}>
           <div /> {/* Time gutter corner */}
           {days.map(day => (
-            <div key={day} className="meta-text rule-left" style={{ padding: "8px 12px", textAlign: "center" }}>
-              {day}
+            <div key={day.label} className="meta-text rule-left" style={{ padding: "8px 12px", textAlign: "center" }}>
+              {day.label}
             </div>
           ))}
         </div>
@@ -173,15 +225,16 @@ export default function MatrixView({ onTaskClick }: { onTaskClick?: (task: any) 
                 </div>
 
                 {/* Day columns */}
-                {days.map((day, dIdx) => {
+                {days.map((dayInfo, dIdx) => {
                   const tasksStartingHere = state.tasks.filter(
                     t => t.state === "scheduled" && t.scheduledSlot?.startSlot === slot && t.scheduledSlot?.day === dIdx
                   );
 
                   return (
                     <DroppableSlot 
-                      key={`${day}-${slot}`} 
+                      key={`${dayInfo.label}-${slot}`} 
                       dayIdx={dIdx} 
+                      actualDayOfWeek={dayInfo.dayOfWeek}
                       slot={slot} 
                       tasksStartingHere={tasksStartingHere} 
                       isHour={isHour} 

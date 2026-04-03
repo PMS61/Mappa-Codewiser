@@ -110,6 +110,26 @@ export async function createUsersTable(): Promise<ActionResult> {
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
     `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id VARCHAR(255) PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        name VARCHAR(255) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        difficulty INTEGER NOT NULL,
+        duration INTEGER NOT NULL,
+        priority VARCHAR(20) NOT NULL,
+        state VARCHAR(50) NOT NULL,
+        subject VARCHAR(255),
+        deadline TIMESTAMPTZ,
+        energy_recovery FLOAT,
+        cl FLOAT NOT NULL,
+        cl_breakdown JSONB NOT NULL,
+        scheduled_slot JSONB,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
     // Add columns if they don't exist (for existing tables)
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS peak_focus_windows JSONB DEFAULT '[]'::jsonb`;
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS low_energy_windows JSONB DEFAULT '[]'::jsonb`;
@@ -205,8 +225,11 @@ export async function registerUser(userData: RegisterUserInput): Promise<ActionR
   return authenticateAndSetSession({ email, password });
 }
 
-export async function loginUser(credentials: LoginUserInput): Promise<ActionResult | void> {
-  const authResult = await authenticateAndSetSession(credentials);
+export async function loginUser(formData: FormData): Promise<ActionResult | void> {
+  const email = String(formData.get("email") ?? "");
+  const password = String(formData.get("password") ?? "");
+  
+  const authResult = await authenticateAndSetSession({ email, password });
   if (authResult.error) {
     return authResult;
   }

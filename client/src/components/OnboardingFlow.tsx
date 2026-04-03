@@ -739,7 +739,7 @@ export default function OnboardingFlow() {
           <span className="meta-text">Onboarding Step {step + 1} of 5</span>
         </div>
       </header>
-      <div style={{ height: 60 }} />
+      <div className="mobile-spacer" style={{ height: 60 }} />
 
       <main
         className="container"

@@ -11,6 +11,7 @@ import { AppProvider, useApp } from "@/lib/store";
 import { formatDateHeading } from "@/lib/engine";
 import { generateWeeklyInsight } from "@/lib/templates";
 import WeeklyMatrix from "@/components/WeeklyMatrix";
+import Header from "@/components/Header";
 
 type Tab = "daily" | "weekly";
 
@@ -38,17 +39,7 @@ function ReportContent() {
   return (
     <div style={{ minHeight: "100vh" }}>
       {/* Nav */}
-      <header className="nav">
-        <div className="nav-inner">
-          <a href="/" className="logo">Axiom</a>
-          <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
-            <a href="/dashboard" className="nav-link">Dashboard</a>
-            <a href="/tasks" className="nav-link">Tasks</a>
-            <a href="/report" className="nav-link active">Report</a>
-          </div>
-        </div>
-      </header>
-      <div className="mobile-spacer" style={{ height: 60 }} />
+      <Header />
 
       {/* Hero */}
       <section className="container section-rule" style={{ paddingTop: 60, paddingBottom: 40 }}>

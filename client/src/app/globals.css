@@ -14,6 +14,9 @@
   --vermillion: #C0392B;
   --muted: #5A5A5A;
   --card-bg: #FDFCFA;
+  
+  --bg-invert: #1A1A1A;
+  --pattern-color: rgba(26,26,26,0.05);
 
   /* Semantic accents */
   --safe: #2C6E49;
@@ -21,6 +24,59 @@
   --warning: #C0392B;
   --critical: #7F1D1D;
 
+  /* Schedule Highlights */
+  --peak-bg: rgba(0, 102, 255, 0.05);
+  --low-bg: rgba(239, 35, 60, 0.03);
+  --blocked-bg: rgba(43, 45, 66, 0.04);
+}
+
+:root[data-theme='dark'] {
+  --bg: #141414;
+  --ink: #FAF7F2;
+  --rule: #333333;
+  --vermillion: #E74C3C;
+  --muted: #A3A3A3;
+  --card-bg: #1E1E1E;
+  
+  --bg-invert: #FAF7F2;
+  --pattern-color: rgba(250,247,242,0.08);
+
+  --safe: #4ADE80;
+  --watch: #F59E0B;
+  --warning: #F87171;
+  --critical: #EF4444;
+
+  /* Schedule Highlights - Dark */
+  --peak-bg: rgba(59, 130, 246, 0.15);
+  --low-bg: rgba(239, 68, 68, 0.1);
+  --blocked-bg: rgba(255, 255, 255, 0.05);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141414;
+    --ink: #FAF7F2;
+    --rule: #333333;
+    --vermillion: #E74C3C;
+    --muted: #A3A3A3;
+    --card-bg: #1E1E1E;
+    
+    --bg-invert: #FAF7F2;
+    --pattern-color: rgba(250,247,242,0.08);
+
+    --safe: #4ADE80;
+    --watch: #F59E0B;
+    --warning: #F87171;
+    --critical: #EF4444;
+
+    /* Schedule Highlights - Dark */
+    --peak-bg: rgba(59, 130, 246, 0.15);
+    --low-bg: rgba(239, 68, 68, 0.1);
+    --blocked-bg: rgba(255, 255, 255, 0.05);
+  }
+}
+
+:root {
   /* Task states */
   --state-scheduled: var(--ink);
   --state-inprogress: #1E40AF;
@@ -435,8 +491,8 @@ label {
   .container { padding: 0 16px; }
   .landing-method-grid { grid-template-columns: 1fr !important; }
   
-  .nav { position: relative; border-bottom: 0.5px solid var(--ink); }
-  .nav-inner { flex-direction: column; height: auto; padding: 16px; gap: 12px; align-items: center; }
-  .nav-inner > div { flex-wrap: wrap; justify-content: center; }
+  .nav { position: relative !important; height: auto !important; border-bottom: 0.5px solid var(--ink); padding-bottom: 12px; }
+  .nav-inner { flex-direction: column; height: auto; padding: 16px; gap: 12px; align-items: flex-start; }
+  .nav-inner > div { flex-wrap: wrap; gap: 16px !important; justify-content: flex-start; }
   .mobile-spacer { display: none; }
 }

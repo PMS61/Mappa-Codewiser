@@ -6,7 +6,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AppProvider, useApp } from "@/lib/store";
 import { formatDateHeading, slotToTime, formatDuration } from "@/lib/engine";
 import Header from "@/components/Header";
@@ -15,10 +15,47 @@ import TaskBlock from "@/components/TaskBlock";
 import ReasoningChain from "@/components/ReasoningChain";
 import AddTaskModal from "@/components/AddTaskModal";
 import ConflictPanel from "@/components/ConflictPanel";
+import { getTasks, deleteTask, syncTasks, updateTaskStateAndSlot } from "@/app/actions/tasks";
+import { getUserProfile } from "@/app/actions/auth";
+import { TASK_TYPE_LABELS } from "@/lib/types";
+import { runSchedulingAlgorithm } from "@/lib/engine";
 
 function DashboardContent() {
   const { state, dispatch } = useApp();
   const [showReasoning, setShowReasoning] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<any>(null);
+  const [isUnscheduledModalOpen, setIsUnscheduledModalOpen] = useState(false);
+
+  const handleAutoSchedule = async () => {
+    const result = runSchedulingAlgorithm(
+      state.tasks,
+      state.adjustedBandwidthCurve,
+      state.userProfile,
+      state.reasoningChain
+    );
+    
+    dispatch({ type: "SET_TASKS", payload: result.tasks });
+    if (result.conflict) {
+      dispatch({ type: "SET_CONFLICT", payload: result.conflict });
+    }
+    
+    await syncTasks(result.tasks);
+  };
+
+  useEffect(() => {
+    async function load() {
+      const { tasks, error } = await getTasks();
+      if (!error && tasks) {
+        dispatch({ type: "SET_TASKS", payload: tasks });
+      }
+
+      const { user, error: profileErr } = await getUserProfile();
+      if (!profileErr && user) {
+        dispatch({ type: "SET_USER_PROFILE", payload: user });
+      }
+    }
+    load();
+  }, [dispatch]);
 
   const scheduled = state.tasks
     .filter((t) => t.scheduledSlot && t.state !== "unscheduled")
@@ -123,7 +160,7 @@ function DashboardContent() {
       {/* ── Scheduler Controls ── */}
       <section className="container section-rule" style={{ padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-          <button className="btn btn-sm btn-primary" onClick={() => dispatch({ type: "RUN_SCHEDULER" })}>
+          <button className="btn btn-sm btn-primary" onClick={handleAutoSchedule}>
             Run Scheduler
           </button>
           <button
@@ -133,9 +170,13 @@ function DashboardContent() {
             {showReasoning ? "Hide Reasoning" : `Reasoning Chain (${state.reasoningChain.length})`}
           </button>
         </div>
-        <span className="meta-text">
-          {state.tasks.filter((t) => t.state === "unscheduled").length} unscheduled
-        </span>
+        <button 
+          className="btn btn-sm" 
+          style={{ background: "var(--card-bg)" }} 
+          onClick={() => setIsUnscheduledModalOpen(true)}
+        >
+          Unscheduled Pool ({state.tasks.filter((t) => t.state === "unscheduled").length})
+        </button>
       </section>
 
       {/* ── Main content ── */}
@@ -212,7 +253,10 @@ function DashboardContent() {
                   <button 
                     className="btn btn-primary"
                     style={{ width: "100%" }}
-                    onClick={() => dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId: currentTask.id, state: "completed" } })}
+                    onClick={async () => {
+                      dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId: currentTask.id, state: "completed" } });
+                      await updateTaskStateAndSlot(currentTask.id, "completed", currentTask.scheduledSlot);
+                    }}
                   >
                     Mark as Complete ✓
                   </button>
@@ -245,6 +289,139 @@ function DashboardContent() {
 
       <AddTaskModal />
       <ConflictPanel />
+
+      {/* Unscheduled Modal */}
+      {isUnscheduledModalOpen && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(10,10,12,0.8)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          justifyContent: "flex-end",
+          zIndex: 99999
+        }}>
+          <div style={{
+            background: "var(--card-bg)",
+            width: "100%",
+            maxWidth: 400,
+            borderLeft: "0.5px solid var(--rule)",
+            display: "flex",
+            flexDirection: "column",
+            height: "100%",
+            padding: "32px 24px",
+            overflowY: "auto"
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
+              <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>Unscheduled Pool</h2>
+              <button 
+                style={{ background: "transparent", border: "none", color: "var(--fg)", fontSize: 24, cursor: "pointer" }}
+                onClick={() => setIsUnscheduledModalOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            {state.tasks.filter(t => t.state === "unscheduled").length === 0 ? (
+              <p style={{ color: "var(--muted)" }}>No tasks in the unscheduled pool.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {state.tasks.filter(t => t.state === "unscheduled").map(task => (
+                  <div key={task.id} style={{ 
+                    padding: 16, border: "0.5px solid var(--rule)", cursor: "pointer", background: "var(--bg)" 
+                  }} onClick={() => {
+                    setSelectedTask(task);
+                    setIsUnscheduledModalOpen(false);
+                  }}>
+                    <div className="meta-text" style={{ marginBottom: 8, color: "var(--muted)" }}>
+                      {TASK_TYPE_LABELS[task.type] || task.type.toUpperCase()}
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>{task.name}</div>
+                    <div style={{ fontSize: 13, color: "var(--muted)", display: "flex", justifyContent: "space-between" }}>
+                      <span>CL: {task.cl.toFixed(1)}</span>
+                      <span>{task.duration}m</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {selectedTask && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: "100%",
+          maxWidth: 400,
+          background: "var(--card-bg)",
+          borderLeft: "0.5px solid var(--rule)",
+          zIndex: 100000,
+          padding: "32px 24px",
+          boxShadow: "-10px 0 40px rgba(0,0,0,0.1)",
+          overflowY: "auto"
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 32 }}>
+            <h2 style={{ fontSize: 24, margin: 0, fontWeight: 700 }}>Task Details</h2>
+            <button 
+              style={{ cursor: "pointer", background: "transparent", border: "none", fontSize: 20 }}
+              onClick={() => setSelectedTask(null)}
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="meta-text" style={{ marginBottom: 12 }}>Task Name</div>
+          <h3 style={{ fontSize: 18, marginBottom: 32, fontWeight: 500 }}>{selectedTask.name}</h3>
+
+          <div className="meta-text" style={{ marginBottom: 16 }}>Properties</div>
+          <div className="trace-log" style={{ padding: 24, marginBottom: 32 }}>
+            <div className="log-line rule">State: {selectedTask.state.toUpperCase()}</div>
+            <div className="log-line rule">Type: {selectedTask.type}</div>
+            <div className="log-line rule">Duration: {selectedTask.duration}m</div>
+            <div className="log-line rule">Priority: {selectedTask.priority}</div>
+            <div className="log-line rule">Difficulty: {selectedTask.difficulty}/10</div>
+          </div>
+
+          <div className="meta-text" style={{ marginBottom: 16 }}>Cognitive Load Score</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 24 }}>
+            <span style={{ fontSize: 32, fontWeight: 700, color: Math.abs(selectedTask.cl) > 7 ? 'var(--vermillion)' : 'var(--ink)' }}>
+              {selectedTask.cl.toFixed(2)}
+            </span>
+            <span className="meta-text">Base CL</span>
+          </div>
+
+          {selectedTask.clBreakdown && (
+            <>
+              <div className="meta-text" style={{ marginBottom: 12 }}>Load Breakdown</div>
+              <div style={{ border: "0.5px solid var(--rule)", padding: "16px", background: "var(--bg)" }}>
+                <pre style={{ margin: 0, fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)", whiteSpace: "pre-wrap" }}>
+                  {JSON.stringify(selectedTask.clBreakdown, null, 2)}
+                </pre>
+              </div>
+            </>
+          )}
+
+          <div style={{ marginTop: 32, display: "flex", justifyContent: "flex-end" }}>
+            <button 
+              className="btn" 
+              style={{ color: "var(--vermillion)", borderColor: "var(--vermillion)" }}
+              onClick={async () => {
+                dispatch({ type: "DELETE_TASK", payload: selectedTask.id });
+                setSelectedTask(null);
+                await deleteTask(selectedTask.id);
+              }}
+            >
+              Delete Task
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

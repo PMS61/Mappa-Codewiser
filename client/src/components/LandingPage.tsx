@@ -35,7 +35,7 @@ export default function LandingPage() {
           </div>
         </div>
       </header>
-      <div style={{ height: 60 }} />
+      <div className="mobile-spacer" style={{ height: 60 }} />
 
       <main>
         {/* ── HERO ── */}

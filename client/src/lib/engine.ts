@@ -11,6 +11,8 @@ import type {
   EnergyLevel,
   ReasoningStep,
   SlotCandidate,
+  ScheduleConflict,
+  ConflictResolution,
 } from "./types";
 
 import type { CLBreakdown } from "./types";
@@ -33,6 +35,38 @@ export function timeToSlot(time: string): number {
 /** Duration in minutes to number of slots */
 export function durationToSlots(minutes: number): number {
   return Math.ceil(minutes / 15);
+}
+
+/** Check if a slot is blocked by sleep or fixed commitments */
+export function isSlotBlocked(slot: number, dayIdx: number, profile: any): boolean {
+  if (!profile) return false;
+  const slotMinutes = slot * 15;
+  
+  // 1. Sleep
+  const { wakeTime, sleepTime } = profile;
+  if (wakeTime !== null && sleepTime !== null) {
+    if (sleepTime > wakeTime) {
+      if (slotMinutes >= sleepTime || slotMinutes < wakeTime) return true;
+    } else {
+      if (slotMinutes >= sleepTime && slotMinutes < wakeTime) return true;
+    }
+  }
+  
+  // 2. Fixed Commitments
+  for (const block of (profile.fixedCommitments || [])) {
+    if (block.days.includes(dayIdx)) {
+      if (slotMinutes >= block.start_min && slotMinutes < block.end_min) return true;
+    }
+  }
+  
+  // 3. Hard Exclusions
+  for (const block of (profile.hardExclusions || [])) {
+    if (block.days.includes(dayIdx)) {
+      if (slotMinutes >= block.start_min && slotMinutes < block.end_min) return true;
+    }
+  }
+  
+  return false;
 }
 
 /** Format duration for display */
@@ -149,6 +183,7 @@ export function computeSlotFitness(
   bandwidth: number,
   isProductiveHour: boolean,
   contextSwitchCount: number,
+  dayIdx: number,
   hoursToDeadline: number | null,
 ): SlotCandidate {
   const productiveHourBonus = isProductiveHour ? 1.2 : 0;
@@ -172,6 +207,8 @@ export function computeSlotFitness(
 
   return {
     slotIndex,
+    startSlot: slotIndex,
+    dayIdx,
     fitnessScore,
     bandwidthRemaining: +(bandwidth - taskCL).toFixed(1),
     productiveHourBonus,
@@ -197,6 +234,142 @@ export function computeSacrificeImpact(
 export function clToBorderClass(cl: number): string {
   const clamped = Math.max(1, Math.min(10, Math.ceil(Math.abs(cl))));
   return `task-block-border-${clamped}`;
+}
+
+// ── Core Scheduling Algorithm ──────────────────────────────
+
+export function runSchedulingAlgorithm(
+  tasks: Task[],
+  bandwidthCurve: BandwidthCurve,
+  userProfile: any,
+  existingReasoningChain: ReasoningStep[]
+): { tasks: Task[]; conflict: ScheduleConflict | null; reasoningChain: ReasoningStep[] } {
+  const unscheduled = tasks.filter((t) => t.state === "unscheduled");
+  const scheduled = tasks.filter((t) => t.state !== "unscheduled");
+  const bw = bandwidthCurve;
+
+  const occupied = new Set<string>();
+  for (const t of scheduled) {
+    if (t.scheduledSlot) {
+      for (let s = t.scheduledSlot.startSlot; s < t.scheduledSlot.endSlot; s++) {
+        occupied.add(`${t.scheduledSlot.day}_${s}`);
+      }
+    }
+  }
+
+  const sorted = [...unscheduled].sort((a, b) => {
+    const urgA = a.deadline ? (new Date(a.deadline).getTime() - Date.now()) / 3600000 : 999;
+    const urgB = b.deadline ? (new Date(b.deadline).getTime() - Date.now()) / 3600000 : 999;
+    if (urgA !== urgB) return urgA - urgB;
+    const priOrder = { high: 0, normal: 1, low: 2 };
+    if (priOrder[a.priority] !== priOrder[b.priority])
+      return priOrder[a.priority] - priOrder[b.priority];
+    return Math.abs(b.cl) - Math.abs(a.cl);
+  });
+
+  const reasoningChain: ReasoningStep[] = [
+    ...existingReasoningChain,
+    {
+      number: existingReasoningChain.length + 1,
+      text: `SCHEDULER RUN: ${sorted.length} tasks in pool. Scanning 7-day window.`,
+      isRule: true,
+    },
+  ];
+
+  const today = new Date();
+
+  const placedTasks: Task[] = [...scheduled];
+  let conflict: ScheduleConflict | null = null;
+
+  for (const task of sorted) {
+    const slotsNeeded = durationToSlots(task.duration);
+    const candidates: any[] = [];
+
+    // Scan days 0-6 relative to today
+    for (let dIdx = 0; dIdx < 7; dIdx++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() + dIdx);
+      const actualDayOfWeek = d.getDay();
+
+      // Scan available windows (6:00 - 22:00 = slots 24-88)
+      for (let start = 24; start <= 88 - slotsNeeded; start++) {
+        let slotFree = true;
+        let minBW = Infinity;
+        let energyBonus = 0;
+
+        for (let s = start; s < start + slotsNeeded; s++) {
+          if (occupied.has(`${dIdx}_${s}`) || isSlotBlocked(s, actualDayOfWeek, userProfile)) {
+            slotFree = false;
+            break;
+          }
+          minBW = Math.min(minBW, bw[s]);
+          if (userProfile) {
+            const slotMins = s * 15;
+            const isPeak = userProfile.peakFocusWindows?.some((w: any) => slotMins >= w.start_min && slotMins < w.end_min);
+            if (isPeak) energyBonus += 0.5;
+          }
+        }
+        if (!slotFree) continue;
+
+        const hoursToDeadline = task.deadline ? (new Date(task.deadline).getTime() - Date.now()) / 3600000 : null;
+        const candidate = computeSlotFitness(start, Math.abs(task.cl), minBW, energyBonus > 0, 0, dIdx, hoursToDeadline);
+        candidate.fitnessScore += energyBonus;
+        candidate.fitnessScore -= dIdx * 2.0; // Preference for earlier days
+        candidate.startSlot = start;
+        candidate.dayIdx = dIdx;
+        candidates.push(candidate);
+      }
+    }
+
+    if (candidates.length === 0) {
+      conflict = {
+        taskId: task.id,
+        reason: `No available slot for "${task.name}" (CL=${task.cl}, duration=${task.duration}min)`,
+        availableResolutions: task.cl > 5 ? ["defer", "sacrifice"] : ["defer", "extend_deadline"],
+        reasoningSteps: [
+          {
+            number: 1,
+            text: `CONFLICT: No valid slot for "${task.name}" before deadline.`,
+            isConflict: true,
+          },
+        ],
+      };
+      reasoningChain.push({
+        number: reasoningChain.length + 1,
+        text: `[!] CONFLICT: Cannot place "${task.name}". No available slot found.`,
+        isConflict: true,
+      });
+      placedTasks.push(task);
+      continue;
+    }
+
+    candidates.sort((a, b) => b.fitnessScore - a.fitnessScore);
+    const winner = candidates[0];
+
+    const placedTask: Task = {
+      ...task,
+      state: "scheduled",
+      scheduledSlot: {
+        startSlot: winner.startSlot,
+        endSlot: winner.startSlot + slotsNeeded,
+        day: winner.dayIdx,
+        fitnessScore: winner.fitnessScore,
+        reasoningSteps: generatePlacementReasoning(task, candidates, winner.dayIdx),
+      },
+    };
+
+    placedTasks.push(placedTask);
+    for (let s = winner.startSlot; s < winner.startSlot + slotsNeeded; s++) {
+      occupied.add(`${winner.dayIdx}_${s}`);
+    }
+
+    reasoningChain.push({
+      number: reasoningChain.length + 1,
+      text: `SUCCESS: Placed "${task.name}" at day ${winner.dayIdx}, ${slotToTime(winner.startSlot)} (Fitness: ${winner.fitnessScore.toFixed(1)})`,
+    });
+  }
+
+  return { tasks: placedTasks, conflict, reasoningChain };
 }
 
 // ── Date Formatting ───────────────────────────────────────

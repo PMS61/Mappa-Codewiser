@@ -10,15 +10,51 @@ import { useState, useEffect } from "react";
 import { AppProvider, useApp } from "@/lib/store";
 import MatrixView from "./MatrixView";
 import AddTaskModal from "@/components/AddTaskModal";
+import Header from "@/components/Header";
 import { TASK_TYPE_LABELS } from "@/lib/types";
+import { getTasks, deleteTask, updateTaskStateAndSlot, syncTasks } from "@/app/actions/tasks";
+import { getUserProfile } from "@/app/actions/auth";
+import { isSlotBlocked, runSchedulingAlgorithm } from "@/lib/engine";
 
 import { DndContext, DragEndEvent } from "@dnd-kit/core";
 
 function SchedulerContent() {
   const { state, dispatch } = useApp();
   const [selectedTask, setSelectedTask] = useState<any>(null);
+  const [isUnscheduledModalOpen, setIsUnscheduledModalOpen] = useState(false);
 
-  function handleDragEnd(event: DragEndEvent) {
+  useEffect(() => {
+    async function load() {
+      const { tasks, error } = await getTasks();
+      if (!error && tasks) {
+        dispatch({ type: "SET_TASKS", payload: tasks });
+      }
+
+      const { user, error: profileErr } = await getUserProfile();
+      if (!profileErr && user) {
+        dispatch({ type: "SET_USER_PROFILE", payload: user });
+      }
+    }
+    load();
+  }, [dispatch]);
+
+  const handleAutoSchedule = async () => {
+    const result = runSchedulingAlgorithm(
+      state.tasks,
+      state.adjustedBandwidthCurve,
+      state.userProfile,
+      state.reasoningChain
+    );
+    
+    dispatch({ type: "SET_TASKS", payload: result.tasks });
+    if (result.conflict) {
+      dispatch({ type: "SET_CONFLICT", payload: result.conflict });
+    }
+    
+    await syncTasks(result.tasks);
+  };
+
+  async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (over && over.id) {
       const dropId = String(over.id);
@@ -26,10 +62,38 @@ function SchedulerContent() {
         const parts = dropId.split("-");
         const day = parseInt(parts[1], 10);
         const slot = parseInt(parts[2], 10);
+        
+        const taskId = String(active.id);
+        const task = state.tasks.find((t) => t.id === taskId);
+        
+        // Correctly map the day index (0-6) into the actual day of the week (Sun-Sat)
+        const today = new Date();
+        const dropDate = new Date(today);
+        dropDate.setDate(today.getDate() + day);
+        const actualDayOfWeek = dropDate.getDay();
+        
+        // ── Validation: Check if slot is blocked ──
+        if (isSlotBlocked(slot, actualDayOfWeek, state.userProfile)) {
+          console.warn("[Matrix] Drop rejected: Slot is blocked by availability/sleep constraints.");
+          return;
+        }
+        
         dispatch({
           type: "SCHEDULE_TASK_MANUALLY",
-          payload: { taskId: String(active.id), startSlot: slot, day }
+          payload: { taskId, startSlot: slot, day }
         });
+
+        if (task) {
+           const slotsNeeded = Math.ceil(task.duration / 15);
+           const newSlot = {
+             startSlot: slot,
+             endSlot: slot + slotsNeeded,
+             day,
+             fitnessScore: 5.0,
+             reasoningSteps: []
+           };
+           await updateTaskStateAndSlot(taskId, "scheduled", newSlot);
+        }
       }
     }
   }
@@ -37,24 +101,7 @@ function SchedulerContent() {
   return (
     <div style={{ minHeight: "100vh" }}>
       {/* Nav */}
-      <header className="nav">
-        <div className="nav-inner">
-          <a href="/" className="logo">Axiom</a>
-          <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
-            <a href="/dashboard" className="nav-link">Dashboard</a>
-            <a href="/tasks" className="nav-link active">Tasks / Matrix</a>
-            <a href="/report" className="nav-link">Report</a>
-            <button
-              className="btn btn-sm"
-              style={{ marginLeft: 8 }}
-              onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}
-            >
-              + Task
-            </button>
-          </div>
-        </div>
-      </header>
-      <div className="mobile-spacer" style={{ height: 60 }} />
+      <Header />
 
       {/* RAG Input Section */}
       <section className="container section-rule" style={{ paddingTop: 40, paddingBottom: 40 }}>
@@ -90,13 +137,83 @@ function SchedulerContent() {
           <div>
             <div className="meta-text" style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>Global 96×7 Schedule Matrix</span>
-              <button className="btn btn-sm btn-primary" onClick={() => dispatch({ type: "RUN_SCHEDULER" })}>Auto Schedule</button>
+              <div style={{ display: "flex", gap: 12 }}>
+                <button 
+                  className="btn btn-sm" 
+                  style={{ background: "var(--card-bg)" }} 
+                  onClick={() => setIsUnscheduledModalOpen(true)}
+                >
+                  Unscheduled Pool ({state.tasks.filter((t) => t.state === "unscheduled").length})
+                </button>
+                <button className="btn btn-sm btn-primary" onClick={handleAutoSchedule}>Auto Schedule</button>
+              </div>
             </div>
             <MatrixView onTaskClick={setSelectedTask} />
           </div>
 
         </main>
       </DndContext>
+
+      {/* Unscheduled Modal */}
+      {isUnscheduledModalOpen && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(10,10,12,0.8)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          justifyContent: "flex-end", // Slide from right
+          zIndex: 99999
+        }}>
+          <div style={{
+            background: "var(--card-bg)",
+            width: "100%",
+            maxWidth: 400,
+            borderLeft: "0.5px solid var(--rule)",
+            display: "flex",
+            flexDirection: "column",
+            height: "100%",
+            padding: "32px 24px",
+            overflowY: "auto"
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
+              <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>Unscheduled Pool</h2>
+              <button 
+                style={{ background: "transparent", border: "none", color: "var(--fg)", fontSize: 24, cursor: "pointer" }}
+                onClick={() => setIsUnscheduledModalOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            {state.tasks.filter(t => t.state === "unscheduled").length === 0 ? (
+              <p style={{ color: "var(--muted)" }}>No tasks in the unscheduled pool. They've all been assigned to the matrix!</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {state.tasks.filter(t => t.state === "unscheduled").map(task => (
+                  <div key={task.id} style={{ 
+                    padding: 16, border: "0.5px solid var(--rule)", cursor: "pointer", background: "var(--bg)" 
+                  }} onClick={() => {
+                    setSelectedTask(task);
+                    setIsUnscheduledModalOpen(false);
+                  }}>
+                    <div className="meta-text" style={{ marginBottom: 8, color: "var(--muted)" }}>
+                      {TASK_TYPE_LABELS[task.type] || task.type.toUpperCase()}
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>{task.name}</div>
+                    <div style={{ fontSize: 13, color: "var(--muted)", display: "flex", justifyContent: "space-between" }}>
+                      <span>CL: {task.cl.toFixed(1)}</span>
+                      <span>{task.duration}m</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Task Preview Modal Right Panel */}
       <AddTaskModal />
@@ -156,6 +273,33 @@ function SchedulerContent() {
               </div>
             </>
           )}
+
+          <div style={{ marginTop: 32, display: "flex", justifyContent: "space-between", gap: 12 }}>
+            {selectedTask.state === "scheduled" && (
+              <button 
+                className="btn btn-primary"
+                style={{ flex: 1 }}
+                onClick={async () => {
+                  dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId: selectedTask.id, state: "completed" } });
+                  await updateTaskStateAndSlot(selectedTask.id, "completed", selectedTask.scheduledSlot);
+                  setSelectedTask(null);
+                }}
+              >
+                Mark as Complete ✓
+              </button>
+            )}
+            <button 
+              className="btn text-vermillion" 
+              style={{ flex: selectedTask.state === "scheduled" ? 0 : 1, borderColor: "var(--vermillion)" }}
+              onClick={async () => {
+                dispatch({ type: "DELETE_TASK", payload: selectedTask.id });
+                setSelectedTask(null);
+                await deleteTask(selectedTask.id);
+              }}
+            >
+              Delete Task
+            </button>
+          </div>
         </div>
       )}
     </div>

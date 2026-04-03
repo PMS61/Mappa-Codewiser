@@ -6,6 +6,7 @@
 "use client";
 
 import { useApp } from "@/lib/store";
+import { updateTaskStateAndSlot } from "@/app/actions/tasks";
 
 export default function ConflictPanel() {
   const { state, dispatch } = useApp();
@@ -46,7 +47,11 @@ export default function ConflictPanel() {
                 key={res}
                 className="btn"
                 style={{ width: "100%", textAlign: "left", display: "flex", justifyContent: "space-between", padding: "12px 20px" }}
-                onClick={() => dispatch({ type: "RESOLVE_CONFLICT", payload: { taskId: conflict.taskId, resolution: res } })}
+                onClick={async () => {
+                   const newState = res === "sacrifice" ? "sacrificed" : res === "extend_deadline" ? "deadline_extended" : "rescheduled";
+                   dispatch({ type: "RESOLVE_CONFLICT", payload: { taskId: conflict.taskId, resolution: res } });
+                   await updateTaskStateAndSlot(conflict.taskId, newState, null);
+                }}
               >
                 <span>{info.label}</span>
                 <span className="meta-text">{info.desc}</span>
