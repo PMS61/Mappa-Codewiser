@@ -18,14 +18,119 @@ import ConflictPanel from "@/components/ConflictPanel";
 import {
   getTasks,
   saveTask,
-  saveBulkTasks,
-  saveSchedule,
   deleteTask,
   updateTaskStateAndSlot,
 } from "@/app/actions/tasks";
-import { priorityToNumber, taskTypeToSchedulerType } from "@/lib/scheduler";
+import { runSchedulerAction, markSectionComplete } from "@/app/actions/schedule";
 import { TASK_TYPE_LABELS } from "@/lib/types";
-import type { Task, ReasoningStep } from "@/lib/types";
+import type { Task, SectionSchedule, DaySchedule } from "@/lib/types";
+
+// ── Section View Component ─────────────────────────────────
+
+const SECTION_COLORS: Record<string, string> = {
+  morning: "var(--safe)",
+  afternoon: "var(--ink)",
+  evening: "var(--muted)",
+};
+
+function SectionView({
+  section,
+  tasks,
+  onComplete,
+  onMarkSectionDone,
+}: {
+  section: SectionSchedule;
+  tasks: Task[];
+  onComplete: (taskId: string) => Promise<void>;
+  onMarkSectionDone: () => Promise<void>;
+}) {
+  const color = SECTION_COLORS[section.section] ?? "var(--ink)";
+  const pct = section.axiomBudget > 0
+    ? Math.min(100, (section.axiomUsed / section.axiomBudget) * 100)
+    : 0;
+
+  return (
+    <div style={{ marginBottom: 32 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div className="meta-text" style={{ color }}>{section.section.toUpperCase()}</div>
+        <div className="meta-text" style={{ fontSize: 10, color: "var(--muted)" }}>
+          {section.axiomUsed.toFixed(1)} / {section.axiomBudget.toFixed(1)} AXIOMS
+        </div>
+      </div>
+
+      {/* Axiom progress bar */}
+      <div style={{ height: 2, background: "var(--rule)", marginBottom: 16 }}>
+        <div style={{
+          height: "100%",
+          width: `${pct}%`,
+          background: pct > 90 ? "var(--vermillion)" : color,
+          transition: "width 0.3s",
+        }} />
+      </div>
+
+      {section.tasks.length === 0 ? (
+        <div style={{ padding: "16px 0", color: "var(--muted)", fontSize: 13 }}>No tasks in this section.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {section.tasks.map((item, idx) => {
+            const task = tasks.find((t) => t.id === item.taskId);
+            const isCompleted = task?.state === "completed";
+            return (
+              <div
+                key={item.chunkId ?? item.taskId + idx}
+                style={{
+                  padding: "12px 16px",
+                  border: "0.5px solid var(--rule)",
+                  background: isCompleted ? "var(--bg)" : "var(--card-bg)",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  opacity: isCompleted ? 0.5 : 1,
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+                    {item.taskName}
+                    {item.chunkId && (
+                      <span className="meta-text" style={{ marginLeft: 8, fontSize: 10 }}>
+                        chunk {item.chunkId.split("_chunk_")[1]}
+                      </span>
+                    )}
+                  </div>
+                  <div className="meta-text" style={{ fontSize: 10, color: "var(--muted)" }}>
+                    {item.duration}m
+                    {item.isRecreational
+                      ? ` · +${item.axiomGain.toFixed(1)} axiom restore`
+                      : ` · ${item.axiomCost.toFixed(2)} axioms`}
+                  </div>
+                </div>
+                {!item.isRecreational && !isCompleted && (
+                  <button
+                    className="btn btn-sm"
+                    style={{ fontSize: 11, padding: "4px 10px" }}
+                    onClick={() => onComplete(item.taskId)}
+                  >
+                    ✓
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <button
+        className="btn btn-sm"
+        style={{ marginTop: 12, fontSize: 10, color: "var(--muted)", width: "100%" }}
+        onClick={onMarkSectionDone}
+      >
+        Mark {section.section} done (record performance)
+      </button>
+    </div>
+  );
+}
+
+// ── Dashboard Content ──────────────────────────────────────
 
 function DashboardContent() {
   const { state, dispatch } = useApp();
@@ -35,6 +140,7 @@ function DashboardContent() {
   const [isLoadingTasks, setIsLoadingTasks] = useState(true);
   const [isScheduling, setIsScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [viewDay, setViewDay] = useState(0); // which day offset to display
 
   // Tracks the last-persisted snapshot of each task (id → serialized state+slot)
   const prevTasksSnapRef = useRef<Map<string, string>>(new Map());
@@ -77,145 +183,52 @@ function DashboardContent() {
     }
   }, [state.tasks, isLoadingTasks]);
 
-  // ── API-driven scheduler ───────────────────────────────
-  const runApiScheduler = useCallback(async () => {
+  // ── Axiom-based section scheduler (server action) ─────────
+  const runAxiomScheduler = useCallback(async () => {
     setIsScheduling(true);
     setScheduleError(null);
 
-    const schedulerTasks = state.tasks
-      .filter((t) => t.state === "unscheduled" || t.state === "rescheduled")
-      .map((t) => ({
-        id: t.id,
-        title: t.name,
-        difficulty: t.difficulty,
-        priority: priorityToNumber(t.priority),
-        duration: t.duration,
-        type: taskTypeToSchedulerType(t.type),
-        date: t.deadline?.split("T")[0],
-      }));
+    const tasksToSchedule = state.tasks.filter(
+      (t) => t.state === "unscheduled" || t.state === "rescheduled",
+    );
 
-    if (schedulerTasks.length === 0) {
-      dispatch({ type: "RUN_SCHEDULER" });
+    if (tasksToSchedule.length === 0) {
+      setScheduleError("No unscheduled tasks to place.");
       setIsScheduling(false);
       return;
     }
 
     try {
-      const res = await fetch("/api/schedule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tasks: schedulerTasks,
-          startDate: new Date().toISOString().split("T")[0],
-        }),
-      });
+      const today = new Date().toISOString().split("T")[0];
+      const result = await runSchedulerAction(state.tasks, today);
 
-      if (!res.ok) {
-        const { error } = await res.json();
-        setScheduleError(error ?? "Schedule API failed");
+      if (result.error) {
+        setScheduleError(result.error);
         setIsScheduling(false);
         return;
       }
 
-      const result = await res.json();
-      const { schedule, meta } = result as {
-        schedule: Record<string, Array<{
-          id: string; scheduledDate: string; energyCost: number; score: number;
-        }>>;
-        meta: { energyByDay: Record<string, { used: number; remaining: number }> };
-      };
-
-      const newReasoning: ReasoningStep[] = [
-        ...state.reasoningChain,
-        {
-          number: state.reasoningChain.length + 1,
-          text: `API SCHEDULER RUN: Energy model applied. ${schedulerTasks.filter(t => t.type === "work").length} work tasks, ${schedulerTasks.filter(t => t.type === "energy_gain").length} energy tasks.`,
-          isRule: true,
+      dispatch({
+        type: "SET_SECTIONS",
+        payload: {
+          days: result.days ?? [],
+          weights: result.updatedWeights ?? { morning: 0.40, afternoon: 0.35, evening: 0.25 },
+          log: result.reasoningLog ?? [],
         },
-      ];
-
-      const updatedTasks: Task[] = [...state.tasks];
-      let reasoningNum = newReasoning.length + 1;
-
-      for (const [date, dayEntries] of Object.entries(schedule)) {
-        const dayEnergy = meta.energyByDay[date];
-        newReasoning.push({
-          number: reasoningNum++,
-          text: `DAY ${date}: ${dayEntries.filter((e) => e.energyCost > 0).length} tasks scheduled. Energy used: ${dayEnergy?.used ?? "?"} / 50. Remaining: ${dayEnergy?.remaining ?? "?"}`,
-          isRule: true,
-        });
-
-        for (const entry of dayEntries) {
-          if (entry.energyCost === 0) continue;
-
-          const taskIdx = updatedTasks.findIndex((t) => t.id === entry.id);
-          if (taskIdx === -1) continue;
-
-          const task = updatedTasks[taskIdx];
-          const slotsNeeded = Math.ceil(task.duration / 15);
-          const dayOffset = Math.max(
-            0,
-            Math.round(
-              (new Date(date).getTime() - new Date().setHours(0, 0, 0, 0)) / 86400000,
-            ),
-          );
-
-          const baseSlot = 36; // 9:00 AM
-          const posInDay = dayEntries.filter(e => e.energyCost > 0).findIndex(e => e.id === entry.id);
-          const startSlot = baseSlot + posInDay * (slotsNeeded + 1);
-
-          updatedTasks[taskIdx] = {
-            ...task,
-            state: "scheduled",
-            scheduledSlot: {
-              startSlot,
-              endSlot: startSlot + slotsNeeded,
-              day: dayOffset,
-              fitnessScore: entry.score,
-              reasoningSteps: [
-                {
-                  number: 1,
-                  text: `Energy cost: ${entry.energyCost.toFixed(2)} / Score: ${entry.score.toFixed(3)}`,
-                  isRule: true,
-                  relatedTaskId: entry.id,
-                },
-                {
-                  number: 2,
-                  text: `ACTION: Scheduled on ${date} (Day +${dayOffset})`,
-                  isAction: true,
-                  relatedTaskId: entry.id,
-                },
-              ],
-            },
-          };
-
-          newReasoning.push({
-            number: reasoningNum++,
-            text: `SCHEDULED: "${task.name}" → ${date}. E_task=${entry.energyCost.toFixed(2)}, score=${entry.score.toFixed(3)}`,
-            isAction: true,
-            relatedTaskId: entry.id,
-          });
-        }
-
-        saveSchedule(
-          date,
-          updatedTasks.filter((t) => t.scheduledSlot?.day !== undefined),
-          dayEnergy?.used ?? 0,
-          dayEnergy?.remaining ?? 50,
-        );
-      }
-
-      dispatch({ type: "BULK_UPDATE_TASKS", payload: updatedTasks });
+      });
       dispatch({ type: "SET_DAY_PHASE", payload: "active" });
-      saveBulkTasks(updatedTasks);
+
+      // Persist all tasks with updated state
+      for (const task of state.tasks) {
+        saveTask(task);
+      }
     } catch (err) {
-      console.error("Schedule API error:", err);
-      setScheduleError("Network error. Falling back to local scheduler.");
-      dispatch({ type: "RUN_SCHEDULER" });
+      console.error("Scheduler error:", err);
+      setScheduleError("Scheduler failed. Please try again.");
     } finally {
       setIsScheduling(false);
     }
-  }, [state.tasks, state.reasoningChain, dispatch]);
+  }, [state.tasks, dispatch]);
 
   const scheduled = state.tasks
     .filter((t) => t.scheduledSlot && t.scheduledSlot.day === 0 && t.state !== "unscheduled")
@@ -229,6 +242,12 @@ function DashboardContent() {
     state.tasks
       .filter((t) => t.cl < 0 && t.scheduledSlot && t.scheduledSlot.day === 0)
       .reduce((s, t) => s + t.cl, 0),
+  );
+
+  // Section view helpers
+  const hasSections = state.scheduledDays.length > 0;
+  const viewDayData: DaySchedule | undefined = state.scheduledDays.find(
+    (d) => d.dayOffset === viewDay,
   );
 
   return (
@@ -322,12 +341,21 @@ function DashboardContent() {
         <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
           <button
             className="btn btn-sm btn-primary"
-            onClick={runApiScheduler}
+            onClick={runAxiomScheduler}
             disabled={isScheduling}
             style={{ opacity: isScheduling ? 0.6 : 1, cursor: isScheduling ? "not-allowed" : "pointer" }}
           >
-            {isScheduling ? "Scheduling…" : "Run Scheduler"}
+            {isScheduling ? "Scheduling…" : "Run Axiom Scheduler"}
           </button>
+          {hasSections && (
+            <button
+              className="btn btn-sm"
+              onClick={() => dispatch({ type: "CLEAR_SCHEDULED" })}
+              style={{ color: "var(--muted)" }}
+            >
+              Clear Schedule
+            </button>
+          )}
           <button
             className="btn btn-sm"
             onClick={() => setShowReasoning(!showReasoning)}
@@ -437,21 +465,99 @@ function DashboardContent() {
             );
           })()}
 
-          <div className="meta-text" style={{ marginBottom: 16 }}>Today&apos;s Schedule</div>
+          {/* ── Section-based schedule view ── */}
+          {hasSections ? (
+            <>
+              {/* Day selector */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 24, overflowX: "auto" }}>
+                {state.scheduledDays.map((d) => (
+                  <button
+                    key={d.dayOffset}
+                    className="btn btn-sm"
+                    onClick={() => setViewDay(d.dayOffset)}
+                    style={{
+                      background: viewDay === d.dayOffset ? "var(--ink)" : "var(--card-bg)",
+                      color: viewDay === d.dayOffset ? "var(--bg)" : "var(--ink)",
+                      whiteSpace: "nowrap",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {d.dayOffset === 0 ? "Today" : `+${d.dayOffset}d`} · {d.date.slice(5)}
+                  </button>
+                ))}
+              </div>
 
-          {scheduled.length === 0 ? (
-            <div style={{ padding: "40px 0", textAlign: "center" }}>
-              <p style={{ color: "var(--muted)", marginBottom: 16 }}>
-                No tasks scheduled yet. Add tasks and run the scheduler.
-              </p>
-              <button className="btn" onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}>
-                + Add First Task
-              </button>
-            </div>
+              {viewDayData ? (
+                <>
+                  {/* Day axiom summary */}
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, 1fr)",
+                    gap: 12,
+                    marginBottom: 32,
+                    padding: "16px",
+                    border: "0.5px solid var(--rule)",
+                    background: "var(--card-bg)",
+                  }}>
+                    <div>
+                      <div className="meta-text" style={{ fontSize: 9, color: "var(--muted)" }}>AXIOMS USED</div>
+                      <div style={{ fontWeight: 700, fontSize: 18, marginTop: 4 }}>{viewDayData.totalAxiomsUsed.toFixed(1)}</div>
+                    </div>
+                    <div>
+                      <div className="meta-text" style={{ fontSize: 9, color: "var(--muted)" }}>REMAINING</div>
+                      <div style={{ fontWeight: 700, fontSize: 18, marginTop: 4, color: "var(--safe)" }}>{viewDayData.totalAxiomsRemaining.toFixed(1)}</div>
+                    </div>
+                    <div>
+                      <div className="meta-text" style={{ fontSize: 9, color: "var(--muted)" }}>DIVERSITY H</div>
+                      <div style={{
+                        fontWeight: 700, fontSize: 18, marginTop: 4,
+                        color: viewDayData.diversityEntropy > 0.5 ? "var(--safe)" : "var(--vermillion)",
+                      }}>
+                        {viewDayData.diversityEntropy.toFixed(3)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Section columns */}
+                  {viewDayData.sections.map((section) => (
+                    <SectionView
+                      key={section.section}
+                      section={section}
+                      tasks={state.tasks}
+                      onComplete={async (taskId) => {
+                        dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId, state: "completed" } });
+                        await updateTaskStateAndSlot(taskId, "completed", undefined);
+                      }}
+                      onMarkSectionDone={async () => {
+                        await markSectionComplete(section.section as any, section.axiomBudget, section.axiomUsed);
+                      }}
+                    />
+                  ))}
+                </>
+              ) : (
+                <div style={{ padding: "40px 0", textAlign: "center", color: "var(--muted)" }}>
+                  No data for this day.
+                </div>
+              )}
+            </>
           ) : (
-            scheduled.map((task) => (
-              <TaskBlock key={task.id} task={task} />
-            ))
+            <>
+              <div className="meta-text" style={{ marginBottom: 16 }}>Today&apos;s Schedule</div>
+              {scheduled.length === 0 ? (
+                <div style={{ padding: "40px 0", textAlign: "center" }}>
+                  <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+                    No tasks scheduled yet. Add tasks and run the Axiom Scheduler.
+                  </p>
+                  <button className="btn" onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}>
+                    + Add First Task
+                  </button>
+                </div>
+              ) : (
+                scheduled.map((task) => (
+                  <TaskBlock key={task.id} task={task} />
+                ))
+              )}
+            </>
           )}
         </div>
 

@@ -1,318 +1,363 @@
 /* ═══════════════════════════════════════════════════════════
-   THE AXIOM — Deterministic Energy-Model Task Scheduler
-   Pure math, greedy optimization. No AI. No randomness.
-   ═══════════════════════════════════════════════════════════
+   THE AXIOM — Full Mathematical Scheduling Pipeline
+   Pure deterministic. No AI. No randomness.
 
-   Energy Model:
-     DAILY_ENERGY = 50
-     E_task = 0.6 * difficulty² + 0.8 * priority
-     E_gain  = 0.2 * duration
-     score   = (2 * priority + difficulty) / E_task
-
-   Scheduling Algorithm:
-     1. Separate tasks → workTasks | energyTasks
-     2. Sort workTasks: priority DESC → score DESC → id ASC (stable)
-     3. Anti-starvation: after every 3 high-priority tasks (≥7), insert 1 lower
-     4. For each task: if energy ≥ E_task → schedule; else insert energy task or defer
-     5. Deferred tasks roll to the next day (multi-day support)
-     6. Energy never goes below 0
+   Pipeline stages (per scheduling run):
+     1. Score   — compute urgency + priority score for every task
+     2. Sort    — order by score DESC (deadline-aware)
+     3. Anti-starvation — interleave low-priority tasks
+     4. Chunk   — fragment tasks > 60 min across days
+     5. Allocate — distribute chunks across sections, check constraints
+     6. Diversity — enforce Shannon entropy > 0.5 per day
+     7. Output  — produce DaySchedule[] + reasoning log
    ═══════════════════════════════════════════════════════════ */
+
+import type {
+  Task,
+  TaskChunk,
+  SectionName,
+  SectionSchedule,
+  DaySchedule,
+  SchedulerOutput,
+  TimeSection,
+} from "./types";
+
+import {
+  BASE_AXIOMS,
+  buildSections,
+  computeAxiomCost,
+  computeAxiomGain,
+  priorityToNum,
+} from "./energyModel";
+
+import { enrichTask, compareByScore, type ScoredTask } from "./scoring";
+
+import {
+  fragmentTask,
+  shouldChunk,
+  computeChunkSize,
+} from "./chunking";
+
+import {
+  computeDiversityEntropy,
+  applyAntiStarvation,
+  computeDailyLoad,
+} from "./constraints";
 
 // ── Constants ─────────────────────────────────────────────
 
-export const DAILY_ENERGY = 50;
-const HIGH_PRIORITY_THRESHOLD = 7; // ≥ this is "high priority" for anti-starvation
-const ANTI_STARVATION_STREAK = 3;  // every N high-priority tasks, insert 1 low
-const MAX_SCHEDULING_DAYS = 30;    // safety ceiling to prevent infinite loops
-
-// ── Public Types ──────────────────────────────────────────
-
-export interface SchedulerTask {
-  id: string;
-  title: string;
-  difficulty: number;              // 1-10
-  priority: number;                // 1-10
-  duration: number;                // minutes
-  type: "work" | "energy_gain";
-  date?: string;                   // optional preferred ISO date (YYYY-MM-DD)
-}
-
-export interface ScheduledEntry extends SchedulerTask {
-  scheduledDate: string;
-  energyCost: number;              // energy consumed (0 for energy_gain tasks)
-  energyGain: number;              // energy restored (0 for work tasks)
-  score: number;                   // priority score used for ranking
-  insertedEnergyTaskId?: string;   // id of energy task inserted to unlock this task
-}
-
-export interface ScheduleResult {
-  schedule: Record<string, ScheduledEntry[]>;  // date → ordered task list
-  meta: {
-    totalDays: number;
-    totalTasksScheduled: number;
-    energyByDay: Record<string, { used: number; remaining: number }>;
-  };
-}
-
-// ── Internal enriched task (work only) ───────────────────
-
-interface EnrichedTask extends SchedulerTask {
-  eTask: number;   // pre-computed energy cost
-  score: number;   // pre-computed priority score
-}
-
-// ── Energy Model Functions ────────────────────────────────
-
-/** E_task = 0.6 * difficulty² + 0.8 * priority */
-export function computeEnergyConsumption(difficulty: number, priority: number): number {
-  return 0.6 * Math.pow(difficulty, 2) + 0.8 * priority;
-}
-
-/** E_gain = 0.2 * duration (minutes) */
-export function computeEnergyGain(duration: number): number {
-  return 0.2 * duration;
-}
-
-/** score = (2 * priority + difficulty) / E_task */
-export function computeTaskScore(
-  priority: number,
-  difficulty: number,
-  eTask: number,
-): number {
-  if (eTask <= 0) return 0;
-  return (2 * priority + difficulty) / eTask;
-}
+const MAX_DAYS = 30;
 
 // ── Date Utilities ────────────────────────────────────────
 
-function toDateString(date: Date): string {
-  return date.toISOString().split("T")[0];
+function todayString(): string {
+  return new Date().toISOString().split("T")[0];
 }
 
-function addDays(dateStr: string, days: number): string {
+function addDays(dateStr: string, n: number): string {
   const d = new Date(`${dateStr}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return toDateString(d);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().split("T")[0];
 }
 
-// ── Anti-Starvation Queue Builder ─────────────────────────
-
-/**
- * Reorders task queue so that after every ANTI_STARVATION_STREAK high-priority
- * tasks, one low-priority task is inserted. This prevents starvation.
- * Both sub-lists are already sorted by their respective priority+score.
- */
-function applyAntiStarvation(tasks: EnrichedTask[]): EnrichedTask[] {
-  const high = tasks.filter((t) => t.priority >= HIGH_PRIORITY_THRESHOLD);
-  const low = tasks.filter((t) => t.priority < HIGH_PRIORITY_THRESHOLD);
-
-  const result: EnrichedTask[] = [];
-  let hi = 0;
-  let lo = 0;
-  let streak = 0;
-
-  while (hi < high.length || lo < low.length) {
-    if (streak >= ANTI_STARVATION_STREAK && lo < low.length) {
-      result.push(low[lo++]);
-      streak = 0;
-    } else if (hi < high.length) {
-      result.push(high[hi++]);
-      streak++;
-    } else {
-      result.push(low[lo++]);
-    }
-  }
-
-  return result;
+function daysBetween(from: string, to: string): number {
+  const a = new Date(`${from}T00:00:00Z`).getTime();
+  const b = new Date(`${to}T00:00:00Z`).getTime();
+  return Math.max(0, Math.floor((b - a) / 86_400_000));
 }
 
-// ── Energy Task Picker ────────────────────────────────────
+// ── Slot Map Key ──────────────────────────────────────────
 
-/**
- * Returns the best available energy task for the current day slot.
- * Strategy: pick the task with the highest E_gain (longest duration)
- * that has not yet been used in this day.
- */
-function pickEnergyTask(
-  energyTasks: SchedulerTask[],
-  usedThisDay: Set<string>,
-): SchedulerTask | null {
-  const available = energyTasks.filter((t) => !usedThisDay.has(t.id));
-  if (available.length === 0) return null;
-  // Pick highest energy gain (longest duration)
-  return available.reduce((best, t) =>
-    computeEnergyGain(t.duration) > computeEnergyGain(best.duration) ? t : best,
-  );
+/** Unique key for (dayOffset, sectionName) — prevents double-booking */
+function slotKey(day: number, section: SectionName): string {
+  return `${day}:${section}`;
 }
 
-// ── Entry Builders ────────────────────────────────────────
+// ── Empty Section Schedule ─────────────────────────────────
 
-function buildWorkEntry(task: EnrichedTask, date: string): ScheduledEntry {
+function emptySection(
+  section: TimeSection,
+): SectionSchedule {
   return {
-    id: task.id,
-    title: task.title,
-    difficulty: task.difficulty,
-    priority: task.priority,
-    duration: task.duration,
-    type: "work",
-    date: task.date,
-    scheduledDate: date,
-    energyCost: +task.eTask.toFixed(2),
-    energyGain: 0,
-    score: +task.score.toFixed(3),
-  };
-}
-
-function buildEnergyEntry(task: SchedulerTask, date: string): ScheduledEntry {
-  return {
-    id: task.id,
-    title: task.title,
-    difficulty: task.difficulty,
-    priority: task.priority,
-    duration: task.duration,
-    type: "energy_gain",
-    date: task.date,
-    scheduledDate: date,
-    energyCost: 0,
-    energyGain: +computeEnergyGain(task.duration).toFixed(2),
-    score: 0,
+    section: section.name,
+    tasks: [],
+    axiomBudget: section.axiomBudget,
+    axiomUsed: 0,
+    axiomRemaining: section.axiomBudget,
   };
 }
 
 // ── Main Scheduler ────────────────────────────────────────
 
+export interface SchedulerInput {
+  tasks: Task[];
+  /** ISO YYYY-MM-DD reference date, defaults to today */
+  startDate?: string;
+  /** Section weights — from DB feedback or defaults */
+  sectionWeights?: Partial<Record<SectionName, number>>;
+}
+
 /**
- * Deterministic greedy scheduler.
- *
- * @param tasks  - Input task list (mix of "work" and "energy_gain")
- * @param startDate - ISO date string (YYYY-MM-DD) for day 0, defaults to today
- * @returns ScheduleResult with per-day task lists and energy metadata
+ * Full multi-day, multi-section, chunk-aware deterministic scheduler.
  */
-export function runScheduler(
-  tasks: SchedulerTask[],
-  startDate?: string,
-): ScheduleResult {
-  const today = startDate ?? toDateString(new Date());
+export function runScheduler(input: SchedulerInput): SchedulerOutput {
+  const today = input.startDate ?? todayString();
+  const sections = buildSections(input.sectionWeights ?? {});
+  const reasoningLog: string[] = [];
+  const unscheduled: string[] = [];
 
-  // ── Separate task pools ──────────────────────────────
-  const rawWorkTasks = tasks.filter((t) => t.type === "work");
-  const energyTasks = tasks.filter((t) => t.type === "energy_gain");
+  // ── 1. Separate recreational from work tasks ─────────────
+  const workTasks = input.tasks.filter((t) => t.type !== "recreational");
+  const recTasks = input.tasks.filter((t) => t.type === "recreational");
 
-  // ── Enrich work tasks with energy cost + score ───────
-  const enriched: EnrichedTask[] = rawWorkTasks.map((t) => {
-    const eTask = computeEnergyConsumption(t.difficulty, t.priority);
-    const score = computeTaskScore(t.priority, t.difficulty, eTask);
-    return { ...t, eTask, score };
-  });
-
-  // ── Sort: priority DESC → score DESC → id ASC (deterministic) ──
-  enriched.sort((a, b) => {
-    if (b.priority !== a.priority) return b.priority - a.priority;
-    if (b.score !== a.score) return b.score - a.score;
-    return a.id.localeCompare(b.id);
-  });
-
-  // ── Sort energy tasks: highest gain first ────────────
-  const sortedEnergyTasks = [...energyTasks].sort(
-    (a, b) => computeEnergyGain(b.duration) - computeEnergyGain(a.duration),
+  reasoningLog.push(
+    `INIT: ${workTasks.length} work tasks, ${recTasks.length} recreational tasks. BASE_AXIOMS=${BASE_AXIOMS}.`,
   );
 
-  // ── Multi-day scheduling loop ─────────────────────────
-  const schedule: Record<string, ScheduledEntry[]> = {};
-  const energyByDay: Record<string, { used: number; remaining: number }> = {};
+  // ── 2. Score all work tasks ───────────────────────────────
+  const scored: ScoredTask[] = workTasks.map((t) => enrichTask(t, today));
+  scored.sort(compareByScore);
 
-  let pending: EnrichedTask[] = [...enriched];
-  let currentDate = today;
-  let dayIndex = 0;
+  reasoningLog.push(
+    `SCORING: Top task = "${scored[0]?.task.name ?? "—"}" score=${scored[0]?.score.toFixed(3) ?? 0}.`,
+  );
 
-  while (pending.length > 0 && dayIndex < MAX_SCHEDULING_DAYS) {
-    // Reset energy for this day
-    let currentEnergy = DAILY_ENERGY;
-    const dayEntries: ScheduledEntry[] = [];
-    const deferred: EnrichedTask[] = [];
-    const usedEnergyTasksToday = new Set<string>();
+  // ── 3. Anti-starvation interleave ─────────────────────────
+  const orderedScored = applyAntiStarvation(
+    scored.map((s) => ({ ...s, priorityNum: s.priorityNum })),
+  );
+  reasoningLog.push(`ANTI-STARVATION: Queue reordered for fairness.`);
 
-    // Apply anti-starvation ordering for today's queue
-    const dayQueue = applyAntiStarvation(pending);
+  // ── 4. Build chunk list ────────────────────────────────────
+  interface SchedulableUnit {
+    taskId: string;
+    taskName: string;
+    chunkId?: string;
+    duration: number;
+    eTask: number;      // axiom cost for this unit
+    daysRemaining: number;
+    preferredDay: number;
+    preferredSection: SectionName;
+    isRecreational: false;
+    priorityNum: number;
+  }
 
-    for (const task of dayQueue) {
-      if (currentEnergy >= task.eTask) {
-        // ── Schedule the task ──────────────────────────
-        dayEntries.push(buildWorkEntry(task, currentDate));
-        currentEnergy = Math.max(0, currentEnergy - task.eTask);
-      } else {
-        // ── Try inserting an energy task ───────────────
-        const energyTask = pickEnergyTask(sortedEnergyTasks, usedEnergyTasksToday);
+  const units: SchedulableUnit[] = [];
 
-        if (energyTask !== null) {
-          const eGain = computeEnergyGain(energyTask.duration);
+  for (const st of orderedScored) {
+    const { task, eTask, daysRemaining } = st;
+    const pNum = priorityToNum(task.priority);
 
-          // Insert the energy task
-          dayEntries.push(buildEnergyEntry(energyTask, currentDate));
-          usedEnergyTasksToday.add(energyTask.id);
-          currentEnergy = Math.min(DAILY_ENERGY, currentEnergy + eGain);
+    if (shouldChunk(task, daysRemaining)) {
+      // Compute per-minute axiom rate and generate chunks
+      const axiomPerMin = eTask / task.duration;
+      const chunks = fragmentTask(task, daysRemaining, axiomPerMin);
 
-          // Retry the work task with restored energy
-          if (currentEnergy >= task.eTask) {
-            const entry = buildWorkEntry(task, currentDate);
-            entry.insertedEnergyTaskId = energyTask.id;
-            dayEntries.push(entry);
-            currentEnergy = Math.max(0, currentEnergy - task.eTask);
-          } else {
-            // Still not enough energy — defer
-            deferred.push(task);
-          }
-        } else {
-          // No energy task available — defer to next day
-          deferred.push(task);
+      reasoningLog.push(
+        `CHUNK: "${task.name}" → ${chunks.length} fragments (${computeChunkSize(task.duration)} min each, gap=${Math.floor(daysRemaining / chunks.length)} days).`,
+      );
+
+      for (const chunk of chunks) {
+        units.push({
+          taskId: task.id,
+          taskName: task.name,
+          chunkId: chunk.id,
+          duration: chunk.duration,
+          eTask: chunk.axiomCost,
+          daysRemaining,
+          preferredDay: chunk.scheduledDay,
+          preferredSection: chunk.section,
+          isRecreational: false,
+          priorityNum: pNum,
+        });
+      }
+    } else {
+      // Pick section: morning for high-priority, afternoon for normal, evening for low
+      const section: SectionName =
+        pNum >= 9 ? "morning" : pNum >= 5 ? "afternoon" : "evening";
+
+      units.push({
+        taskId: task.id,
+        taskName: task.name,
+        duration: task.duration,
+        eTask,
+        daysRemaining,
+        preferredDay: 0,
+        preferredSection: section,
+        isRecreational: false,
+        priorityNum: pNum,
+      });
+    }
+  }
+
+  // ── 5. Allocate into days/sections ────────────────────────
+
+  // daySchedules: dayOffset → section name → SectionSchedule
+  const dayMap = new Map<number, Map<SectionName, SectionSchedule>>();
+
+  function getDaySection(day: number, sectionName: SectionName): SectionSchedule {
+    if (!dayMap.has(day)) {
+      const secMap = new Map<SectionName, SectionSchedule>();
+      for (const sec of sections) {
+        secMap.set(sec.name, emptySection(sec));
+      }
+      dayMap.set(day, secMap);
+    }
+    return dayMap.get(day)!.get(sectionName)!;
+  }
+
+  function tryAllocate(
+    unit: SchedulableUnit,
+    day: number,
+    section: SectionName,
+  ): boolean {
+    const sec = getDaySection(day, section);
+    if (sec.axiomRemaining >= unit.eTask) {
+      sec.tasks.push({
+        taskId: unit.taskId,
+        taskName: unit.taskName,
+        chunkId: unit.chunkId,
+        duration: unit.duration,
+        axiomCost: unit.eTask,
+        axiomGain: 0,
+        isRecreational: false,
+      });
+      sec.axiomUsed = +(sec.axiomUsed + unit.eTask).toFixed(4);
+      sec.axiomRemaining = +(sec.axiomRemaining - unit.eTask).toFixed(4);
+      return true;
+    }
+    return false;
+  }
+
+  const SECTION_ORDER: SectionName[] = ["morning", "afternoon", "evening"];
+
+  for (const unit of units) {
+    let placed = false;
+
+    // Try preferred day + section first
+    for (
+      let dayOffset = unit.preferredDay;
+      dayOffset < Math.min(unit.daysRemaining + 1, MAX_DAYS);
+      dayOffset++
+    ) {
+      // Try preferred section first, then others
+      const order = [
+        unit.preferredSection,
+        ...SECTION_ORDER.filter((s) => s !== unit.preferredSection),
+      ];
+
+      for (const section of order) {
+        if (tryAllocate(unit, dayOffset, section)) {
+          reasoningLog.push(
+            `PLACE: "${unit.taskName}"${unit.chunkId ? ` [${unit.chunkId}]` : ""} → Day+${dayOffset} ${section} (cost=${unit.eTask.toFixed(2)})`,
+          );
+          placed = true;
+          break;
         }
+      }
+
+      if (placed) break;
+    }
+
+    if (!placed) {
+      // Last resort: search all days for any available slot
+      for (let dayOffset = 0; dayOffset < MAX_DAYS; dayOffset++) {
+        for (const section of SECTION_ORDER) {
+          if (tryAllocate(unit, dayOffset, section)) {
+            reasoningLog.push(
+              `FALLBACK: "${unit.taskName}" placed at Day+${dayOffset} ${section}`,
+            );
+            placed = true;
+            break;
+          }
+        }
+        if (placed) break;
       }
     }
 
-    schedule[currentDate] = dayEntries;
-    energyByDay[currentDate] = {
-      used: +(DAILY_ENERGY - currentEnergy).toFixed(2),
-      remaining: +currentEnergy.toFixed(2),
-    };
-
-    pending = deferred;
-    currentDate = addDays(currentDate, 1);
-    dayIndex++;
+    if (!placed) {
+      reasoningLog.push(`UNSCHEDULED: "${unit.taskName}" (${unit.taskId}) — no axiom budget available.`);
+      if (!unscheduled.includes(unit.taskId)) {
+        unscheduled.push(unit.taskId);
+      }
+    }
   }
 
-  // ── Compute totals ────────────────────────────────────
-  const totalTasksScheduled = Object.values(schedule).reduce(
-    (sum, day) => sum + day.filter((t) => t.type === "work").length,
-    0,
+  // ── 6. Insert recreational tasks as axiom restores ─────────
+  for (const rec of recTasks) {
+    const gain = computeAxiomGain(rec.duration);
+    // Find the section with most deficit first
+    for (const [day, secMap] of dayMap) {
+      for (const [secName, sec] of secMap) {
+        // Only add rec if axiom used > 70% of budget
+        if (sec.axiomUsed / sec.axiomBudget > 0.7) {
+          sec.tasks.push({
+            taskId: rec.id,
+            taskName: rec.name,
+            duration: rec.duration,
+            axiomCost: 0,
+            axiomGain: gain,
+            isRecreational: true,
+          });
+          sec.axiomRemaining = +(sec.axiomRemaining + gain).toFixed(4);
+          reasoningLog.push(
+            `REC: "${rec.name}" inserted in Day+${day} ${secName} (+${gain.toFixed(2)} axioms).`,
+          );
+          break;
+        }
+      }
+    }
+  }
+
+  // ── 7. Build DaySchedule output ───────────────────────────
+  const days: DaySchedule[] = [];
+
+  for (const [dayOffset, secMap] of [...dayMap.entries()].sort(
+    ([a], [b]) => a - b,
+  )) {
+    const sectionSchedules: SectionSchedule[] = SECTION_ORDER.map(
+      (name) => secMap.get(name)!,
+    );
+
+    const totalUsed = sectionSchedules.reduce(
+      (sum, s) => sum + s.axiomUsed,
+      0,
+    );
+    const totalRemaining = BASE_AXIOMS - totalUsed;
+
+    // Collect flat task list for diversity calc
+    const dayTasks = sectionSchedules.flatMap((s) =>
+      s.tasks
+        .filter((t) => !t.isRecreational)
+        .map((t) => input.tasks.find((task) => task.id === t.taskId))
+        .filter(Boolean) as Task[],
+    );
+
+    const entropy = computeDiversityEntropy(dayTasks);
+    const load = computeDailyLoad(dayTasks);
+
+    days.push({
+      dayOffset,
+      date: addDays(today, dayOffset),
+      sections: sectionSchedules,
+      totalAxiomsUsed: +totalUsed.toFixed(2),
+      totalAxiomsRemaining: +Math.max(0, totalRemaining).toFixed(2),
+      diversityEntropy: +entropy.toFixed(4),
+      loadAcceptable: load < 10000, // rough guard
+    });
+  }
+
+  reasoningLog.push(
+    `COMPLETE: ${days.length} days scheduled. ${unscheduled.length} tasks unscheduled.`,
   );
 
-  return {
-    schedule,
-    meta: {
-      totalDays: dayIndex,
-      totalTasksScheduled,
-      energyByDay,
-    },
-  };
+  return { days, unscheduled, reasoningLog };
 }
 
-// ── Priority Mapper (string → number) ─────────────────────
+// ── Re-exports for backward compat ────────────────────────
 
-/**
- * Maps the app's string priority to a numeric value (1-10) for the scheduler.
- * high → 9, normal → 5, low → 2
- */
-export function priorityToNumber(priority: "high" | "normal" | "low"): number {
-  const map: Record<string, number> = { high: 9, normal: 5, low: 2 };
-  return map[priority] ?? 5;
-}
-
-/**
- * Maps a task's TaskType to the scheduler's binary work/energy_gain type.
- * recreational → energy_gain, everything else → work
- */
-export function taskTypeToSchedulerType(
-  type: string,
-): "work" | "energy_gain" {
-  return type === "recreational" ? "energy_gain" : "work";
-}
+export { priorityToNum as priorityToNumber } from "./energyModel";
+export { computeAxiomCost as computeEnergyConsumption } from "./energyModel";
+export { computeAxiomGain as computeEnergyGain } from "./energyModel";
+export const DAILY_ENERGY = BASE_AXIOMS;
+export { BASE_AXIOMS };

@@ -206,3 +206,74 @@ export interface SlotCandidate {
   deadlineProximityBonus: number;
   isWinner: boolean;
 }
+
+// ── Section / Axiom System ─────────────────────────────────
+
+/** Named time sections within a day */
+export type SectionName = "morning" | "afternoon" | "evening";
+
+export interface TimeSection {
+  name: SectionName;
+  label: string;
+  startHour: number; // inclusive
+  endHour: number;   // exclusive
+  axiomBudget: number; // fraction of BASE_AXIOMS allocated
+  weight: number;    // dynamic weight [0,1], sums to 1 across sections
+}
+
+/** A single fragment (chunk) of a large task */
+export interface TaskChunk {
+  id: string;          // e.g. "task-101_chunk_0"
+  parentTaskId: string;
+  chunkIndex: number;
+  totalChunks: number;
+  duration: number;    // minutes for this chunk
+  scheduledDay: number; // 0-based offset from today
+  section: SectionName;
+  axiomCost: number;
+  state: TaskState;
+}
+
+/** Per-section schedule for one day */
+export interface SectionSchedule {
+  section: SectionName;
+  tasks: Array<{
+    taskId: string;
+    taskName: string;
+    chunkId?: string;
+    duration: number;
+    axiomCost: number;
+    axiomGain: number; // for recreational
+    isRecreational: boolean;
+  }>;
+  axiomBudget: number;
+  axiomUsed: number;
+  axiomRemaining: number;
+}
+
+/** Full schedule for one day */
+export interface DaySchedule {
+  dayOffset: number; // 0 = today
+  date: string;      // ISO YYYY-MM-DD
+  sections: SectionSchedule[];
+  totalAxiomsUsed: number;
+  totalAxiomsRemaining: number;
+  diversityEntropy: number;
+  loadAcceptable: boolean;
+}
+
+/** Output of the full scheduling pipeline */
+export interface SchedulerOutput {
+  days: DaySchedule[];
+  unscheduled: string[]; // taskIds that could not be placed
+  reasoningLog: string[];
+}
+
+/** DB record for section performance feedback */
+export interface SectionPerformanceRecord {
+  sectionName: SectionName;
+  scheduledAxioms: number;
+  actualAxioms: number;
+  efficiencyRatio: number; // actualAxioms / scheduledAxioms
+  recordedAt: string;
+}
