@@ -24,6 +24,7 @@ import type {
   Workspace,
   DailyReport,
   ScheduleConflict,
+  DaySchedule,
 } from "./types";
 import {
   computeCL,
@@ -77,6 +78,15 @@ export interface AppState {
     wakeTime: number;
     sleepTime: number;
   } | null;
+
+  // Section schedule (output of runSchedulerAction)
+  scheduledDays: DaySchedule[];
+
+  // Section weights (from DB feedback)
+  sectionWeights: { morning: number; afternoon: number; evening: number };
+
+  // Scheduler reasoning log
+  schedulerLog: string[];
 }
 
 // ── Actions ───────────────────────────────────────────────
@@ -99,7 +109,9 @@ type Action =
   | { type: "BULK_UPDATE_TASKS"; payload: Task[] }
   | { type: "SET_TASKS"; payload: Task[] }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  | { type: "SET_USER_PROFILE"; payload: any };
+  | { type: "SET_USER_PROFILE"; payload: any }
+  | { type: "CLEAR_SCHEDULED" }
+  | { type: "SET_SECTIONS"; payload: { days: DaySchedule[]; weights: { morning: number; afternoon: number; evening: number }; log: string[] } };
 
 // ── ID Generator ──────────────────────────────────────────
 
@@ -338,6 +350,49 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, tasks: merged };
     }
 
+    case "CLEAR_SCHEDULED": {
+      return {
+        ...state,
+        tasks: state.tasks.map((t) =>
+          t.state === "scheduled" ? { ...t, state: "unscheduled" as TaskState } : t,
+        ),
+        scheduledDays: [],
+        schedulerLog: [],
+      };
+    }
+
+    case "SET_SECTIONS": {
+      const { days, weights, log } = action.payload;
+      // Mark tasks that appear in the schedule as scheduled
+      const scheduledIds = new Set<string>();
+      for (const day of days) {
+        for (const section of day.sections) {
+          for (const item of section.tasks) {
+            scheduledIds.add(item.taskId);
+          }
+        }
+      }
+      return {
+        ...state,
+        scheduledDays: days,
+        sectionWeights: weights,
+        schedulerLog: log,
+        tasks: state.tasks.map((t) =>
+          scheduledIds.has(t.id) && t.state === "unscheduled"
+            ? { ...t, state: "scheduled" as TaskState }
+            : t,
+        ),
+        reasoningChain: [
+          ...state.reasoningChain,
+          {
+            number: state.reasoningChain.length + 1,
+            text: `SCHEDULER RUN: ${days.length} days planned. ${log[log.length - 1] ?? ""}`,
+            isRule: true,
+          },
+        ],
+      };
+    }
+
     default:
       return state;
   }
@@ -369,6 +424,9 @@ const initialState: AppState = {
   isAddTaskOpen: false,
   selectedView: "day",
   userProfile: null,
+  scheduledDays: [],
+  sectionWeights: { morning: 0.40, afternoon: 0.35, evening: 0.25 },
+  schedulerLog: [],
 };
 
 // ── Context ───────────────────────────────────────────────

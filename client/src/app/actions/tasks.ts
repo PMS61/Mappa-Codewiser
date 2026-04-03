@@ -61,6 +61,184 @@ export async function createTasksTables(): Promise<void> {
       UNIQUE(user_id, schedule_date)
     )
   `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_chunks (
+      id VARCHAR(255) PRIMARY KEY,
+      parent_task_id VARCHAR(255) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      chunk_index INT NOT NULL,
+      total_chunks INT NOT NULL,
+      duration INT NOT NULL,
+      scheduled_day INT NOT NULL DEFAULT 0,
+      section VARCHAR(20) NOT NULL,
+      axiom_cost FLOAT NOT NULL,
+      state VARCHAR(50) NOT NULL DEFAULT 'unscheduled',
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS section_performance (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      section_name VARCHAR(20) NOT NULL,
+      scheduled_axioms FLOAT NOT NULL,
+      actual_axioms FLOAT NOT NULL,
+      efficiency_ratio FLOAT NOT NULL,
+      recorded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS section_weights (
+      user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      morning FLOAT NOT NULL DEFAULT 0.40,
+      afternoon FLOAT NOT NULL DEFAULT 0.35,
+      evening FLOAT NOT NULL DEFAULT 0.25,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    )
+  `;
+}
+
+// ── Section Weight Actions ─────────────────────────────────
+
+export async function getSectionWeights(): Promise<{
+  weights?: { morning: number; afternoon: number; evening: number };
+  error?: string;
+}> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await createTasksTables();
+    const result = await sql`
+      SELECT morning, afternoon, evening FROM section_weights WHERE user_id = ${userId} LIMIT 1
+    `;
+    if (result.rows.length === 0) {
+      return { weights: { morning: 0.40, afternoon: 0.35, evening: 0.25 } };
+    }
+    const row = result.rows[0] as any;
+    return { weights: { morning: row.morning, afternoon: row.afternoon, evening: row.evening } };
+  } catch (err) {
+    console.error("getSectionWeights failed:", err);
+    return { weights: { morning: 0.40, afternoon: 0.35, evening: 0.25 } };
+  }
+}
+
+export async function updateSectionWeightsDB(weights: {
+  morning: number;
+  afternoon: number;
+  evening: number;
+}): Promise<{ error?: string }> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await sql`
+      INSERT INTO section_weights (user_id, morning, afternoon, evening, updated_at)
+      VALUES (${userId}, ${weights.morning}, ${weights.afternoon}, ${weights.evening}, NOW())
+      ON CONFLICT (user_id) DO UPDATE SET
+        morning    = EXCLUDED.morning,
+        afternoon  = EXCLUDED.afternoon,
+        evening    = EXCLUDED.evening,
+        updated_at = NOW()
+    `;
+    return {};
+  } catch (err) {
+    console.error("updateSectionWeightsDB failed:", err);
+    return { error: "Failed to update section weights" };
+  }
+}
+
+export async function recordSectionPerformance(
+  sectionName: string,
+  scheduledAxioms: number,
+  actualAxioms: number,
+  efficiencyRatio: number,
+): Promise<{ error?: string }> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await sql`
+      INSERT INTO section_performance (user_id, section_name, scheduled_axioms, actual_axioms, efficiency_ratio)
+      VALUES (${userId}, ${sectionName}, ${scheduledAxioms}, ${actualAxioms}, ${efficiencyRatio})
+    `;
+    return {};
+  } catch (err) {
+    console.error("recordSectionPerformance failed:", err);
+    return { error: "Failed to record performance" };
+  }
+}
+
+export async function getRecentSectionPerformance(limit = 14): Promise<{
+  records?: Array<{ sectionName: string; efficiencyRatio: number }>;
+  error?: string;
+}> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    const result = await sql`
+      SELECT section_name, efficiency_ratio
+      FROM section_performance
+      WHERE user_id = ${userId}
+      ORDER BY recorded_at DESC
+      LIMIT ${limit}
+    `;
+    return {
+      records: result.rows.map((r: any) => ({
+        sectionName: r.section_name,
+        efficiencyRatio: r.efficiency_ratio,
+      })),
+    };
+  } catch (err) {
+    return { records: [] };
+  }
+}
+
+// ── Chunk Actions ─────────────────────────────────────────
+
+export async function saveChunks(
+  chunks: Array<{
+    id: string;
+    parentTaskId: string;
+    chunkIndex: number;
+    totalChunks: number;
+    duration: number;
+    scheduledDay: number;
+    section: string;
+    axiomCost: number;
+    state: string;
+  }>,
+): Promise<{ error?: string }> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await createTasksTables();
+    for (const chunk of chunks) {
+      await sql`
+        INSERT INTO task_chunks (
+          id, parent_task_id, user_id, chunk_index, total_chunks,
+          duration, scheduled_day, section, axiom_cost, state
+        ) VALUES (
+          ${chunk.id}, ${chunk.parentTaskId}, ${userId}, ${chunk.chunkIndex},
+          ${chunk.totalChunks}, ${chunk.duration}, ${chunk.scheduledDay},
+          ${chunk.section}, ${chunk.axiomCost}, ${chunk.state}
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          state         = EXCLUDED.state,
+          scheduled_day = EXCLUDED.scheduled_day,
+          section       = EXCLUDED.section
+      `;
+    }
+    return {};
+  } catch (err) {
+    console.error("saveChunks failed:", err);
+    return { error: "Failed to save chunks" };
+  }
 }
 
 // ── Row → Task mapper ─────────────────────────────────────
