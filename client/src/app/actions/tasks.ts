@@ -99,6 +99,20 @@ export async function createTasksTables(): Promise<void> {
       updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
     )
   `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_events (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      task_id VARCHAR(255) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      from_state VARCHAR(50),
+      to_state VARCHAR(50) NOT NULL,
+      scheduled_day INT,
+      scheduled_start_slot INT,
+      scheduled_end_slot INT,
+      event_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `;
 }
 
 // ── Section Weight Actions ─────────────────────────────────
@@ -388,6 +402,16 @@ export async function updateTaskState(
   if (!userId) return { error: "Unauthorized" };
 
   try {
+    await createTasksTables();
+
+    const previousResult = await sql`
+      SELECT state
+      FROM tasks
+      WHERE id = ${taskId} AND user_id = ${userId}
+      LIMIT 1
+    `;
+    const previousState = previousResult.rows[0]?.state as string | undefined;
+
     if (scheduledSlot !== undefined) {
       const slotJson = JSON.stringify(scheduledSlot);
       await sql`
@@ -402,6 +426,29 @@ export async function updateTaskState(
         WHERE id = ${taskId} AND user_id = ${userId}
       `;
     }
+
+    await sql`
+      INSERT INTO task_events (
+        user_id,
+        task_id,
+        from_state,
+        to_state,
+        scheduled_day,
+        scheduled_start_slot,
+        scheduled_end_slot,
+        event_at
+      ) VALUES (
+        ${userId},
+        ${taskId},
+        ${previousState ?? null},
+        ${state},
+        ${scheduledSlot?.day ?? null},
+        ${scheduledSlot?.startSlot ?? null},
+        ${scheduledSlot?.endSlot ?? null},
+        NOW()
+      )
+    `;
+
     return {};
   } catch (err) {
     console.error("updateTaskState failed:", err);

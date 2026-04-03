@@ -3,10 +3,31 @@
    Ensures the embedding model is loaded once and reused.
    ═══════════════════════════════════════════════════════════ */
 
-import { pipeline, type FeatureExtractionPipeline } from '@xenova/transformers';
+type FeatureExtractionPipeline = {
+  (inputs: string[], options?: Record<string, unknown>): Promise<{
+    data?: Float32Array;
+  }>;
+};
+
+type TransformersModule = {
+  pipeline: (
+    task: string,
+    model: string,
+    options?: Record<string, unknown>,
+  ) => Promise<FeatureExtractionPipeline>;
+};
 
 let instance: FeatureExtractionPipeline | null = null;
 let isLoading = false;
+
+async function loadTransformers(): Promise<TransformersModule> {
+  if (typeof window === 'undefined') {
+    throw new Error('Embedding pipeline is only available in browser runtime.');
+  }
+
+  const mod = await import('@xenova/transformers');
+  return { pipeline: mod.pipeline };
+}
 
 export async function getEmbeddingPipeline(onProgress?: (progress: string) => void): Promise<FeatureExtractionPipeline> {
   if (instance) return instance;
@@ -20,6 +41,8 @@ export async function getEmbeddingPipeline(onProgress?: (progress: string) => vo
 
   isLoading = true;
   try {
+    const { pipeline } = await loadTransformers();
+
     instance = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
       progress_callback: (p: any) => {
         if (p.status === 'downloading' && onProgress) {
