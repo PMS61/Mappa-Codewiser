@@ -1,7 +1,6 @@
 /* ═══════════════════════════════════════════════════════════
    THE AXIOM — Task Server Actions
-   DB persistence for tasks and schedules.
-   Tables: tasks, schedules
+   Cleaned & Standardized. DB persistence for tasks and schedules.
    ═══════════════════════════════════════════════════════════ */
 
 "use server";
@@ -44,7 +43,7 @@ export async function createTasksTables(): Promise<void> {
       cl FLOAT NOT NULL DEFAULT 0,
       cl_breakdown JSONB DEFAULT '{}'::jsonb,
       scheduled_slot JSONB,
-        "order" INTEGER DEFAULT 0,
+      "order" INTEGER DEFAULT 0,
       created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
     )
   `;
@@ -239,11 +238,23 @@ export async function saveChunks(
     console.error("saveChunks failed:", err);
     return { error: "Failed to save chunks" };
   }
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS sources (
+      subject VARCHAR(255),
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT,
+      chunks JSONB NOT NULL DEFAULT '[]'::jsonb,
+      embeddings JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (subject, user_id)
+    )
+  `;
 }
 
 // ── Row → Task mapper ─────────────────────────────────────
 
-function rowToTask(row: Record<string, unknown>): Task {
+function rowToTask(row: any): Task {
   return {
     id: row.id as string,
     name: row.name as string,
@@ -265,14 +276,11 @@ function rowToTask(row: Record<string, unknown>): Task {
   };
 }
 
-// ── CRUD Actions ──────────────────────────────────────────
+// ── Task Actions ──────────────────────────────────────────
 
 export async function getTasks(): Promise<{ tasks?: Task[]; error?: string }> {
   const userId = await getUserId();
-  if (!userId) {
-    console.warn("getTasks: Unauthorized. Cookie might be missing.");
-    return { error: "Unauthorized" };
-  }
+  if (!userId) return { error: "Unauthorized" };
 
   try {
     let result;
@@ -281,7 +289,7 @@ export async function getTasks(): Promise<{ tasks?: Task[]; error?: string }> {
         SELECT * FROM tasks WHERE user_id = ${userId} ORDER BY "order" ASC, created_at ASC;
       `;
     } catch (dbError: any) {
-      if (dbError.message && dbError.message.includes('column "order" does not exist')) {
+      if (dbError.message?.includes('column "order" does not exist')) {
         await sql`ALTER TABLE tasks ADD COLUMN "order" INTEGER DEFAULT 0;`;
         result = await sql`
           SELECT * FROM tasks WHERE user_id = ${userId} ORDER BY "order" ASC, created_at ASC;
@@ -295,26 +303,8 @@ export async function getTasks(): Promise<{ tasks?: Task[]; error?: string }> {
         throw dbError;
       }
     }
-    
-    const tasks = result.rows.map((row: any) => ({
-      id: row.id,
-      name: row.name,
-      type: row.type,
-      difficulty: row.difficulty,
-      duration: row.duration,
-      priority: row.priority,
-      state: row.state,
-      subject: row.subject || undefined,
-      deadline: row.deadline ? new Date(row.deadline).toISOString() : undefined,
-      energyRecovery: row.energy_recovery || undefined,
-      cl: row.cl,
-      clBreakdown: row.cl_breakdown,
-      order: row.order || 0,
-      scheduledSlot: row.scheduled_slot || undefined,
-      createdAt: new Date(row.created_at).toISOString(),
-    })) as Task[];
 
-    return { tasks };
+    return { tasks: result.rows.map(rowToTask) };
   } catch (error) {
     console.error("Fetch tasks failed:", error);
     return { error: "Failed to fetch tasks." };
@@ -375,15 +365,63 @@ export async function saveTask(task: Task): Promise<{ success?: boolean; error?:
 
 /** Alias kept for backward compatibility — same as saveTask (upserts). */
 export async function addTask(task: Task): Promise<{ success?: boolean; error?: string }> {
-  const result = await saveTask(task);
-  return result.error ? { error: result.error } : { success: true };
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await sql`
+      INSERT INTO tasks (
+        id, user_id, name, type, difficulty, duration, priority, state, subject, 
+        deadline, energy_recovery, cl, cl_breakdown, scheduled_slot, "order"
+      ) VALUES (
+        ${task.id}, ${userId}, ${task.name}, ${task.type}, ${task.difficulty}, ${task.duration}, 
+        ${task.priority}, ${task.state}, ${task.subject || null}, 
+        ${task.deadline || null}, ${task.energyRecovery || null}, ${task.cl}, 
+        ${JSON.stringify(task.clBreakdown)}, 
+        ${task.scheduledSlot ? JSON.stringify(task.scheduledSlot) : null}, 
+        ${task.order || 0}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        type = EXCLUDED.type,
+        difficulty = EXCLUDED.difficulty,
+        duration = EXCLUDED.duration,
+        priority = EXCLUDED.priority,
+        state = EXCLUDED.state,
+        subject = EXCLUDED.subject,
+        deadline = EXCLUDED.deadline,
+        energy_recovery = EXCLUDED.energy_recovery,
+        cl = EXCLUDED.cl,
+        cl_breakdown = EXCLUDED.cl_breakdown,
+        scheduled_slot = EXCLUDED.scheduled_slot,
+        "order" = EXCLUDED."order";
+    `;
+
+    return { success: true };
+  } catch (error) {
+    console.error("addTask failed:", error);
+    return { error: "Failed to save task" };
+  }
+}
+
+export async function deleteTask(taskId: string): Promise<{ success?: boolean; error?: string }> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await sql`DELETE FROM tasks WHERE id = ${taskId} AND user_id = ${userId}`;
+    return { success: true };
+  } catch (err) {
+    console.error("deleteTask failed:", err);
+    return { error: "Failed to delete task" };
+  }
 }
 
 export async function updateTaskState(
   taskId: string,
   state: Task["state"],
   scheduledSlot?: Task["scheduledSlot"],
-): Promise<{ error?: string }> {
+): Promise<{ success?: boolean; error?: string }> {
   const userId = await getUserId();
   if (!userId) return { error: "Unauthorized" };
 
@@ -402,81 +440,53 @@ export async function updateTaskState(
         WHERE id = ${taskId} AND user_id = ${userId}
       `;
     }
-    return {};
+    return { success: true };
   } catch (err) {
     console.error("updateTaskState failed:", err);
     return { error: "Failed to update task" };
   }
 }
 
-/** Alias matching the name used in Dashboard's "Mark as Complete" handler. */
+/** Combined alias for dashboard compat */
 export async function updateTaskStateAndSlot(
   taskId: string,
   state: string,
   scheduledSlot: Task["scheduledSlot"],
 ): Promise<{ success?: boolean; error?: string }> {
-  const result = await updateTaskState(taskId, state as Task["state"], scheduledSlot);
-  return result.error ? { error: result.error } : { success: true };
+  return updateTaskState(taskId, state as Task["state"], scheduledSlot);
 }
 
-export async function deleteTask(taskId: string): Promise<{ success?: boolean; error?: string }> {
-  const userId = await getUserId();
-  if (!userId) {
-    console.warn("deleteTask: Unauthorized. Cookie might be missing.");
-    return { error: "Unauthorized" };
-  }
-
-  try {
-    const result = await sql`
-      DELETE FROM tasks WHERE id = ${taskId} AND user_id = ${userId}
-    `;
-    if (result.rowCount === 0) {
-      console.warn(`[DB] Delete task ${taskId} not found for user ${userId}`);
-    } else {
-      console.log(`[DB] Deleted task: ${taskId} for user ${userId}`);
-    }
-    return { success: true };
-  } catch (err) {
-    console.error("deleteTask failed:", err);
-    return { error: "Failed to delete task" };
-  }
-}
-
-export async function saveBulkTasks(tasks: Task[]): Promise<{ error?: string }> {
+export async function saveBulkTasks(tasks: Task[]): Promise<{ success?: boolean; error?: string }> {
   const userId = await getUserId();
   if (!userId) return { error: "Unauthorized" };
 
   try {
-    await createTasksTables();
     for (const task of tasks) {
-      await saveTask(task);
+      await addTask(task);
     }
-    return {};
-  } catch (err) {
+    return { success: true };
+  } catch (err: any) {
     console.error("saveBulkTasks failed:", err);
     return { error: "Failed to save tasks" };
   }
 }
 
-/** Alias matching syncTasks used in master branch. */
 export async function syncTasks(tasks: Task[]): Promise<{ success?: boolean; error?: string }> {
-  const result = await saveBulkTasks(tasks);
-  return result.error ? { error: result.error } : { success: true };
+  return saveBulkTasks(tasks);
 }
 
-// ── Schedule Persistence ──────────────────────────────────
+// ── Schedule Actions ──────────────────────────────────────
 
 export async function saveSchedule(
   date: string,
   tasks: Task[],
   energyUsed: number,
   energyRemaining: number,
-): Promise<{ error?: string }> {
+): Promise<{ success?: boolean; error?: string }> {
   const userId = await getUserId();
   if (!userId) return { error: "Unauthorized" };
 
   try {
-    await createTasksTables();
     const tasksJson = JSON.stringify(tasks);
     await sql`
       INSERT INTO schedules (user_id, schedule_date, scheduled_tasks, energy_used, energy_remaining)
@@ -486,7 +496,7 @@ export async function saveSchedule(
         energy_used      = EXCLUDED.energy_used,
         energy_remaining = EXCLUDED.energy_remaining
     `;
-    return {};
+    return { success: true };
   } catch (err) {
     console.error("saveSchedule failed:", err);
     return { error: "Failed to save schedule" };
@@ -500,7 +510,6 @@ export async function getSchedule(
   if (!userId) return { error: "Unauthorized" };
 
   try {
-    await createTasksTables();
     const result = await sql`
       SELECT scheduled_tasks, energy_used, energy_remaining
       FROM schedules
@@ -510,14 +519,100 @@ export async function getSchedule(
 
     if (result.rows.length === 0) return { tasks: [], energyUsed: 0, energyRemaining: 50 };
 
-    const row = result.rows[0] as Record<string, unknown>;
+    const row = result.rows[0];
     return {
       tasks: row.scheduled_tasks as Task[],
       energyUsed: row.energy_used as number,
       energyRemaining: row.energy_remaining as number,
     };
-  } catch (err) {
+  } catch (err: any) {
+    if (err.message && err.message.includes('relation "schedules" does not exist')) {
+      await createTasksTables();
+      return { tasks: [], energyUsed: 0, energyRemaining: 50 };
+    }
     console.error("getSchedule failed:", err);
     return { error: "Failed to fetch schedule" };
+  }
+}
+
+// ── Source Persistence ────────────────────────────────────
+
+export async function saveSource(
+  subject: string,
+  content: string,
+  chunks: string[],
+  embeddings: number[][],
+): Promise<{ success?: boolean; error?: string }> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await createTasksTables();
+    await sql`
+      INSERT INTO sources (subject, user_id, content, chunks, embeddings)
+      VALUES (${subject}, ${userId}, ${content}, ${JSON.stringify(chunks)}, ${JSON.stringify(embeddings)})
+      ON CONFLICT (subject, user_id) DO UPDATE SET
+        content = EXCLUDED.content,
+        chunks = EXCLUDED.chunks,
+        embeddings = EXCLUDED.embeddings;
+    `;
+    return { success: true };
+  } catch (err) {
+    console.error("saveSource failed:", err);
+    return { error: "Failed to save source data" };
+  }
+}
+
+export async function getSource(
+  subject: string,
+): Promise<{ content?: string; chunks?: string[]; embeddings?: number[][]; error?: string }> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    const result = await sql`
+      SELECT content, chunks, embeddings FROM sources
+      WHERE subject = ${subject} AND user_id = ${userId}
+      LIMIT 1;
+    `;
+
+    if (result.rows.length === 0) return {};
+
+    const row = result.rows[0];
+    return {
+      content: row.content as string,
+      chunks: row.chunks as string[],
+      embeddings: row.embeddings as number[][],
+    };
+  } catch (err: any) {
+    if (err.message && err.message.includes('relation "sources" does not exist')) {
+      await createTasksTables();
+      return {};
+    }
+    console.error("getSource failed:", err);
+    return { error: "Failed to fetch source data" };
+  }
+}
+
+export async function clearSources(): Promise<{ success?: boolean; error?: string }> {
+  try {
+    await sql`DELETE FROM sources`;
+    return { success: true };
+  } catch (err) {
+    console.error("clearSources failed:", err);
+    return { error: "Failed to clear sources" };
+  }
+}
+
+export async function clearUnscheduledTasks(): Promise<{ success?: boolean; error?: string }> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await sql`DELETE FROM tasks WHERE user_id = ${userId} AND state = 'unscheduled'`;
+    return { success: true };
+  } catch (err) {
+    console.error("clearUnscheduledTasks failed:", err);
+    return { error: "Failed to clear unscheduled tasks" };
   }
 }

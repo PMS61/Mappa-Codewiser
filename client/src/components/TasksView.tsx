@@ -11,18 +11,30 @@ import { useApp } from "@/lib/store";
 import MatrixView from "./MatrixView";
 import AddTaskModal from "@/components/AddTaskModal";
 import Header from "@/components/Header";
-import { TASK_TYPE_LABELS } from "@/lib/types";
-import { getTasks, deleteTask, updateTaskStateAndSlot, syncTasks, addTask } from "@/app/actions/tasks";
+import { TASK_TYPE_LABELS, Task } from "@/lib/types";
+import { 
+  getTasks, 
+  deleteTask, 
+  updateTaskStateAndSlot, 
+  syncTasks, 
+  addTask, 
+  saveTask,
+  getSource, 
+  saveSource, 
+  clearSources, 
+  clearUnscheduledTasks 
+} from "@/app/actions/tasks";
 import { getUserProfile } from "@/app/actions/auth";
-import { isSlotBlocked, runSchedulingAlgorithm } from "@/lib/engine";
-import { chunkText, topK, buildTasksFromRAG, extractTextFromFile } from "@/lib/rag-engine";
-import { getEmbeddingPipeline } from "@/lib/transformers-pipeline";
+import { isSlotBlocked, runSchedulingAlgorithm, computeCL } from "@/lib/engine";
+import { chunkText, topK, buildTasksFromContext, extractTextFromFile } from "@/lib/rag-engine";
 import { DndContext, DragEndEvent } from "@dnd-kit/core";
 
 
 function SchedulerContent() {
   const { state, dispatch } = useApp();
   const [selectedTask, setSelectedTask] = useState<any>(null);
+  const [isEditingTask, setIsEditingTask] = useState(false);
+  const [editTaskData, setEditTaskData] = useState<any>({});
   const [isUnscheduledModalOpen, setIsUnscheduledModalOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -90,36 +102,17 @@ function SchedulerContent() {
     
     setRagStatus("loading");
     setRagError("");
-    setRagProgress("Initialising embedding model...");
+    setRagProgress("Analyzing content...");
     
     try {
-      const pipe = await getEmbeddingPipeline((msg) => setRagProgress(msg));
+      setRagProgress("Applying extraction rules...");
+      const fullContent = ragInput;
+      const generated = buildTasksFromContext(fullContent, ragTopic, ragDeadline);
       
-      setRagProgress("Chunking text...");
-      const chunks = chunkText(ragInput);
-      if (chunks.length === 0) throw new Error("No extractable content found in provided text.");
-      
-      const cEmbs: number[][] = [];
-      for (let i = 0; i < chunks.length; i++) {
-        setRagProgress(`Embedding chunk ${i + 1} / ${chunks.length}`);
-        const out = await pipe([chunks[i]], { pooling: "mean", normalize: true });
-        cEmbs.push(out.data ? Array.from(out.data as any) : (out as any).tolist()[0]);
-      }
-      
-      setRagProgress("Embedding topic query...");
-      const qOut = await pipe([`Learning topics for ${ragTopic}`], { pooling: "mean", normalize: true });
-      const qEmb = Array.from(qOut.data as Float32Array);
-      
-      setRagProgress("Retrieving relevant chunks...");
-      const retrieved = topK(qEmb, cEmbs, chunks, Math.min(12, chunks.length));
-      
-      setRagProgress("Generating tasks via rules engine...");
-      const generated = buildTasksFromRAG(retrieved, ragTopic, ragDeadline);
-      
-      setRagProgress("Syncing with database...");
+      setRagProgress("Syncing tasks...");
       for (const t of generated) {
         const id = crypto.randomUUID();
-        const { error } = await addTask({
+        await addTask({
           id,
           name: t.name,
           subject: t.subject,
@@ -133,29 +126,27 @@ function SchedulerContent() {
           order: t.order,
           clBreakdown: {
             baseDifficulty: t.difficulty,
-            durationWeight: t.duration / 30, // example weighting
+            durationWeight: t.duration / 30,
             deadlineUrgency: 1.0,
-            typeMultiplier: (t as any).multiplier || 1.0,
+            typeMultiplier: (t as any).multiplier || (t.type === 'learning' ? 1.4 : t.type === 'problem_solving' ? 1.3 : 1.0),
             priorityWeight: t.priority === "high" ? 1.5 : 1.0,
             total: t.cl
           },
           createdAt: new Date().toISOString()
         });
-        if (error) console.error("Failed to sync task:", t.name, error);
       }
 
-      // Refresh tasks from server
       const { tasks, error: fetchErr } = await getTasks();
       if (!fetchErr && tasks) {
         dispatch({ type: "SET_TASKS", payload: tasks });
       }
 
       setRagStatus("done");
-      setRagProgress("Extraction complete!");
-      setRagInput(""); // Clear on success
+      setRagProgress("Tasks generated!");
+      setRagInput(""); 
     } catch (err: any) {
       console.error("Extraction error:", err);
-      setRagError(err.message || "Failed to extract tasks.");
+      setRagError(err.message || "Failed to generate tasks.");
       setRagStatus("error");
     }
   };
@@ -212,8 +203,8 @@ function SchedulerContent() {
 
       {/* RAG Input Section */}
       <section className="container section-rule" style={{ paddingTop: 40, paddingBottom: 40 }}>
-        <div className="meta-text" style={{ marginBottom: 16 }}>RAG-Powered Extraction</div>
-        <h2 style={{ marginBottom: 16 }}>Generate Tasks from Context</h2>
+        <div className="meta-text" style={{ marginBottom: 16 }}>Syllabus Plan Generator</div>
+        <h2 style={{ marginBottom: 16 }}>Generate Tasks from Syllabus</h2>
         
         {ragStatus === "loading" ? (
           <div style={{ background: "var(--card-bg)", border: "0.5px solid var(--rule)", padding: "48px 24px", textAlign: "center", display: "flex", flexDirection: "column", gap: 24 }}>
@@ -268,7 +259,7 @@ function SchedulerContent() {
               </div>
             </div>
             <textarea 
-              placeholder="Paste syllabus, email thread, or meeting notes here. Axiom will extract tasks and assign appropriate CL scores..."
+              placeholder="Paste syllabus segments or course modules here. Axiom will extract tasks and assign appropriate CL scores based on document structure..."
               value={ragInput}
               onChange={(e) => setRagInput(e.target.value)}
               style={{ 
@@ -285,13 +276,13 @@ function SchedulerContent() {
             />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "0.5px solid var(--rule)", paddingTop: 16 }}>
               <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-                <span className="meta-text" style={{ color: "var(--muted)" }}>Model: Axiom-Extraction-v1 (Streaming)</span>
+                <span className="meta-text" style={{ color: "var(--muted)" }}>Direct Content Analysis (Max 5 Pages)</span>
                 <button 
                   className="btn btn-secondary" 
                   style={{ padding: "4px 8px", fontSize: 11 }}
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  Upload Source (PDF/IMG)
+                  Upload Context (PDF/Img)
                 </button>
                 <input 
                   type="file" 
@@ -301,12 +292,14 @@ function SchedulerContent() {
                   onChange={handleFileUpload}
                 />
               </div>
-              <button 
-                className="btn btn-primary"
-                onClick={handleExtractTasks}
-              >
-                Extract Tasks &gt;
-              </button>
+              <div style={{ display: "flex", gap: 12 }}>
+                <button 
+                  className="btn btn-primary"
+                  onClick={handleExtractTasks}
+                >
+                  Generate Plan &gt;
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -364,7 +357,24 @@ function SchedulerContent() {
             overflowY: "auto"
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
-              <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>Unscheduled Pool</h2>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>Unscheduled Pool</h2>
+                <button 
+                  style={{ background: "transparent", border: "0.5px solid var(--rule)", color: "var(--muted)", padding: "4px 8px", fontSize: 11, cursor: "pointer", borderRadius: 4 }}
+                  onClick={async () => {
+                    if (confirm("Clear ALL unscheduled tasks? This cannot be undone.")) {
+                      const { error } = await clearUnscheduledTasks();
+                      if (error) alert(error);
+                      else {
+                        const { tasks } = await getTasks();
+                        if (tasks) dispatch({ type: "SET_TASKS", payload: tasks });
+                      }
+                    }
+                  }}
+                >
+                  Clear All
+                </button>
+              </div>
               <button 
                 style={{ background: "transparent", border: "none", color: "var(--fg)", fontSize: 24, cursor: "pointer" }}
                 onClick={() => setIsUnscheduledModalOpen(false)}
@@ -372,19 +382,32 @@ function SchedulerContent() {
                 ✕
               </button>
             </div>
-            {state.tasks.filter(t => t.state === "unscheduled").length === 0 ? (
-              <p style={{ color: "var(--muted)" }}>No tasks in the unscheduled pool. They've all been assigned to the matrix!</p>
+            {state.tasks
+              .filter(t => t.state === "unscheduled")
+              .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)) // Sort by original document order
+              .length === 0 ? (
+              <p style={{ color: "var(--muted)" }}>No tasks in the pool. Paste a syllabus to generate a study plan!</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {state.tasks.filter(t => t.state === "unscheduled").map(task => (
+                {state.tasks
+                  .filter(t => t.state === "unscheduled")
+                  .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                  .map(task => (
                   <div key={task.id} style={{ 
-                    padding: 16, border: "0.5px solid var(--rule)", cursor: "pointer", background: "var(--bg)" 
-                  }} onClick={() => {
+                    padding: 16, border: "0.5px solid var(--rule)", cursor: "pointer", background: "var(--bg)",
+                    transition: "border-color 0.2s"
+                  }} 
+                  onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--ink)"}
+                  onMouseLeave={(e) => e.currentTarget.style.borderColor = "var(--rule)"}
+                  onClick={() => {
                     setSelectedTask(task);
                     setIsUnscheduledModalOpen(false);
                   }}>
-                    <div className="meta-text" style={{ marginBottom: 8, color: "var(--muted)" }}>
-                      {TASK_TYPE_LABELS[task.type] || task.type.toUpperCase()}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                      <div className="meta-text" style={{ color: "var(--muted)" }}>
+                        {TASK_TYPE_LABELS[task.type] || task.type.toUpperCase()}
+                      </div>
+                      <span className="meta-text" style={{ fontSize: 10 }}>#{task.order ?? "?"}</span>
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>{task.name}</div>
                     <div style={{ fontSize: 13, color: "var(--muted)", display: "flex", justifyContent: "space-between" }}>
@@ -427,34 +450,160 @@ function SchedulerContent() {
             </button>
           </div>
 
-          <div className="meta-text" style={{ marginBottom: 12 }}>Task Name</div>
-          <h3 style={{ fontSize: 18, marginBottom: 32, fontWeight: 500 }}>{selectedTask.name}</h3>
-
-          <div className="meta-text" style={{ marginBottom: 16 }}>Properties</div>
-          <div className="trace-log" style={{ padding: 24, marginBottom: 32 }}>
-            <div className="log-line rule">State: {selectedTask.state.toUpperCase()}</div>
-            <div className="log-line rule">Type: {selectedTask.type}</div>
-            <div className="log-line rule">Duration: {selectedTask.duration}m</div>
-            <div className="log-line rule">Priority: {selectedTask.priority}</div>
-            <div className="log-line rule">Difficulty: {selectedTask.difficulty}/10</div>
-          </div>
-
-          <div className="meta-text" style={{ marginBottom: 16 }}>Cognitive Load Score</div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 24 }}>
-            <span style={{ fontSize: 32, fontWeight: 700, color: Math.abs(selectedTask.cl) > 7 ? 'var(--vermillion)' : 'var(--ink)' }}>
-              {selectedTask.cl.toFixed(2)}
-            </span>
-            <span className="meta-text">Base CL</span>
-          </div>
-
-          {selectedTask.clBreakdown && (
-            <>
-              <div className="meta-text" style={{ marginBottom: 12 }}>Load Breakdown</div>
-              <div style={{ border: "0.5px solid var(--rule)", padding: "16px", background: "var(--bg)" }}>
-                <pre style={{ margin: 0, fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)", whiteSpace: "pre-wrap" }}>
-                  {JSON.stringify(selectedTask.clBreakdown, null, 2)}
-                </pre>
+          {isEditingTask ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 24, marginBottom: 32 }}>
+              <div>
+                <div className="meta-text" style={{ marginBottom: 12 }}>Task Name</div>
+                <input 
+                  className="input-base" 
+                  value={editTaskData.name || ""} 
+                  onChange={e => setEditTaskData({...editTaskData, name: e.target.value})} 
+                  style={{ width: "100%", padding: 12, border: "0.5px solid var(--rule)", background: "var(--bg)", color: "var(--ink)", fontWeight: 600 }}
+                />
               </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <div>
+                  <div className="meta-text" style={{ marginBottom: 12 }}>Type</div>
+                  <select 
+                    value={editTaskData.type} 
+                    onChange={e => setEditTaskData({...editTaskData, type: e.target.value as any})}
+                    style={{ width: "100%", padding: 12, border: "0.5px solid var(--rule)", background: "var(--bg)", color: "var(--ink)" }}
+                  >
+                    <option value="learning">Learning</option>
+                    <option value="problem_solving">Problem Solving</option>
+                    <option value="project">Project</option>
+                    <option value="revision">Revision</option>
+                  </select>
+                </div>
+                <div>
+                  <div className="meta-text" style={{ marginBottom: 12 }}>Duration (min)</div>
+                  <input 
+                    type="number"
+                    value={editTaskData.duration} 
+                    onChange={e => setEditTaskData({...editTaskData, duration: parseInt(e.target.value)})}
+                    style={{ width: "100%", padding: 12, border: "0.5px solid var(--rule)", background: "var(--bg)", color: "var(--ink)" }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <div>
+                  <div className="meta-text" style={{ marginBottom: 12 }}>Priority</div>
+                  <select 
+                    value={editTaskData.priority} 
+                    onChange={e => setEditTaskData({...editTaskData, priority: e.target.value as any})}
+                    style={{ width: "100%", padding: 12, border: "0.5px solid var(--rule)", background: "var(--bg)", color: "var(--ink)" }}
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+                <div>
+                  <div className="meta-text" style={{ marginBottom: 12 }}>Difficulty (1-10)</div>
+                  <input 
+                    type="number"
+                    min="1" max="10"
+                    value={editTaskData.difficulty} 
+                    onChange={e => setEditTaskData({...editTaskData, difficulty: parseInt(e.target.value)})}
+                    style={{ width: "100%", padding: 12, border: "0.5px solid var(--rule)", background: "var(--bg)", color: "var(--ink)" }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="meta-text" style={{ marginBottom: 12 }}>Subject (Optional)</div>
+                <input 
+                  className="input-base" 
+                  value={editTaskData.subject || ""} 
+                  onChange={e => setEditTaskData({...editTaskData, subject: e.target.value})} 
+                  style={{ width: "100%", padding: 12, border: "0.5px solid var(--rule)", background: "var(--bg)", color: "var(--ink)" }}
+                  placeholder="e.g. Physics, CS101..."
+                />
+              </div>
+              
+              <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
+                <button 
+                  className="btn btn-primary" 
+                  style={{ flex: 1 }}
+                  onClick={async () => {
+                    const daysToDeadline = editTaskData.deadline ? Math.max(0, Math.floor((new Date(editTaskData.deadline).getTime() - Date.now()) / 86400000)) : null;
+                    const breakdown = computeCL(
+                      editTaskData.difficulty,
+                      editTaskData.duration,
+                      daysToDeadline,
+                      editTaskData.type,
+                      editTaskData.priority
+                    );
+                    
+                    const updatedTask = { 
+                      ...selectedTask, 
+                      ...editTaskData,
+                      cl: breakdown.total,
+                      clBreakdown: breakdown
+                    } as Task;
+                    
+                    dispatch({ type: "UPDATE_TASK", payload: updatedTask });
+                    await saveTask(updatedTask);
+                    setSelectedTask(updatedTask);
+                    setIsEditingTask(false);
+                  }}
+                >
+                  Save Changes
+                </button>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ flex: 1 }}
+                  onClick={() => setIsEditingTask(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="meta-text" style={{ marginBottom: 12, display: "flex", justifyContent: "space-between" }}>
+                <span>Task Name</span>
+                <span 
+                  style={{ color: "var(--muted)", cursor: "pointer", textDecoration: "underline", fontSize: 10 }}
+                  onClick={() => {
+                    setEditTaskData(selectedTask);
+                    setIsEditingTask(true);
+                  }}
+                >
+                  Edit Task
+                </span>
+              </div>
+              <h3 style={{ fontSize: 16, lineHeight: 1.4, marginBottom: 32, fontWeight: 600, color: "var(--ink)" }}>{selectedTask.name}</h3>
+
+              <div className="meta-text" style={{ marginBottom: 16 }}>Properties</div>
+              <div className="trace-log" style={{ padding: 24, marginBottom: 32 }}>
+                <div className="log-line rule">State: {selectedTask.state.toUpperCase()}</div>
+                <div className="log-line rule">Type: {selectedTask.type}</div>
+                <div className="log-line rule">Duration: {selectedTask.duration}m</div>
+                <div className="log-line rule">Priority: {selectedTask.priority}</div>
+                <div className="log-line rule">Difficulty: {selectedTask.difficulty}/10</div>
+              </div>
+
+              <div className="meta-text" style={{ marginBottom: 16 }}>Cognitive Load Score</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 24 }}>
+                <span style={{ fontSize: 32, fontWeight: 700, color: Math.abs(selectedTask.cl) > 7 ? 'var(--vermillion)' : 'var(--ink)' }}>
+                  {selectedTask.cl.toFixed(2)}
+                </span>
+                <span className="meta-text">Base CL</span>
+              </div>
+
+              {selectedTask.clBreakdown && (
+                <>
+                  <div className="meta-text" style={{ marginBottom: 12 }}>Load Breakdown</div>
+                  <div style={{ border: "0.5px solid var(--rule)", padding: "16px", background: "var(--bg)" }}>
+                    <pre style={{ margin: 0, fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)", whiteSpace: "pre-wrap" }}>
+                      {JSON.stringify(selectedTask.clBreakdown, null, 2)}
+                    </pre>
+                  </div>
+                </>
+              )}
             </>
           )}
 

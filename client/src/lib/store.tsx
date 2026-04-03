@@ -93,6 +93,7 @@ export interface AppState {
 
 type Action =
   | { type: "ADD_TASK"; payload: Task }
+  | { type: "UPDATE_TASK"; payload: Task }
   | { type: "UPDATE_TASK_STATE"; payload: { taskId: string; state: TaskState } }
   | { type: "DELETE_TASK"; payload: string }
   | { type: "SET_ENERGY"; payload: EnergyLevel }
@@ -140,6 +141,14 @@ function reducer(state: AppState, action: Action): AppState {
         tasks: newTasks,
         reasoningChain: [...state.reasoningChain, addReasoning],
         isAddTaskOpen: false,
+      };
+    }
+
+    case "UPDATE_TASK": {
+      const updatedTask = action.payload;
+      return {
+        ...state,
+        tasks: state.tasks.map(t => t.id === updatedTask.id ? updatedTask : t)
       };
     }
 

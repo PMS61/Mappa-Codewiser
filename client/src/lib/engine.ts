@@ -264,6 +264,12 @@ export function runSchedulingAlgorithm(
     const priOrder = { high: 0, normal: 1, low: 2 };
     if (priOrder[a.priority] !== priOrder[b.priority])
       return priOrder[a.priority] - priOrder[b.priority];
+    
+    // Syllabus-First: use original document order as final tie-breaker
+    if (a.order !== undefined && b.order !== undefined && a.order !== b.order) {
+      return a.order - b.order;
+    }
+    
     return Math.abs(b.cl) - Math.abs(a.cl);
   });
 

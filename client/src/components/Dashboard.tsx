@@ -13,6 +13,7 @@ import {
   getTasks,
   saveTask,
   updateTaskStateAndSlot,
+  clearUnscheduledTasks,
 } from "@/app/actions/tasks";
 import AddTaskModal from "@/components/AddTaskModal";
 import BandwidthCurve from "@/components/BandwidthCurve";
@@ -636,7 +637,24 @@ function DashboardContent() {
             overflowY: "auto"
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
-              <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>Unscheduled Pool</h2>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>Unscheduled Pool</h2>
+                <button 
+                  style={{ background: "transparent", border: "0.5px solid var(--rule)", color: "var(--muted)", padding: "4px 8px", fontSize: 11, cursor: "pointer", borderRadius: 4 }}
+                  onClick={async () => {
+                    if (confirm("Clear ALL unscheduled tasks? This cannot be undone.")) {
+                      const { error } = await clearUnscheduledTasks();
+                      if (error) alert(error);
+                      else {
+                        const { tasks } = await getTasks();
+                        if (tasks) dispatch({ type: "INIT_TASKS", payload: tasks });
+                      }
+                    }
+                  }}
+                >
+                  Clear All
+                </button>
+              </div>
               <button
                 style={{ background: "transparent", border: "none", color: "var(--ink)", fontSize: 24, cursor: "pointer" }}
                 onClick={() => setIsUnscheduledModalOpen(false)}
@@ -644,11 +662,17 @@ function DashboardContent() {
                 ✕
               </button>
             </div>
-            {state.tasks.filter(t => t.state === "unscheduled").length === 0 ? (
-              <p style={{ color: "var(--muted)" }}>No tasks in the unscheduled pool.</p>
+            {state.tasks
+              .filter(t => t.state === "unscheduled")
+              .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+              .length === 0 ? (
+              <p style={{ color: "var(--muted)" }}>No tasks in the pool. Generate a syllabus plan first!</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {state.tasks.filter(t => t.state === "unscheduled").map(task => (
+                {state.tasks
+                  .filter(t => t.state === "unscheduled")
+                  .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                  .map(task => (
                   <div
                     key={task.id}
                     style={{ padding: 16, border: "0.5px solid var(--rule)", cursor: "pointer", background: "var(--bg)" }}
@@ -698,7 +722,7 @@ function DashboardContent() {
           </div>
 
           <div className="meta-text" style={{ marginBottom: 12 }}>Task Name</div>
-          <h3 style={{ fontSize: 18, marginBottom: 32, fontWeight: 500 }}>{selectedTask.name}</h3>
+          <h3 style={{ fontSize: 16, lineHeight: 1.4, marginBottom: 32, fontWeight: 600, color: "var(--ink)" }}>{selectedTask.name}</h3>
 
           <div className="meta-text" style={{ marginBottom: 16 }}>Properties</div>
           <div className="trace-log" style={{ padding: 24, marginBottom: 32 }}>
