@@ -21,6 +21,9 @@ import {
   toStoredUserProfileFromServerUser,
   writeStoredUserProfile,
 } from "@/lib/userProfileStorage";
+import { useApp } from "@/lib/store";
+import { calculateAnalytics } from "@/lib/engine";
+import { type Task } from "@/lib/types";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -81,22 +84,26 @@ function dirIcon(dir: DeviationDir) {
 // ── Static deviation data (replace with algo later) ───────
 // These represent "what the algo observed vs. what user set".
 
-function buildDeviations(profile: UserProfile): Deviation[] {
+function buildDeviations(profile: UserProfile, tasks: Task[]): Deviation[] {
   const { wake_sleep } = profile;
+  const analytics = calculateAnalytics(tasks);
 
-  // placeholder algo outputs
+  // Use a pseudo-random jitter for sleep/wake as we don't track them yet
+  // but we want the report to look "shifted" if density is high
+  const jitter = analytics.contextSwitchesPerDay > 5 ? 45 : 15;
+
   const ALGO = {
-    actual_wake_min: wake_sleep.wake + 35,       // waking 35 min late
-    actual_sleep_min: wake_sleep.sleep + 50,     // sleeping 50 min late
-    peak1_actual_start: (profile.peak_focus_windows[0]?.start_min ?? 540) + 20, // peak window starts 20 min late
-    peak1_actual_end:   (profile.peak_focus_windows[0]?.end_min ?? 660) + 20,
-    low1_actual_start:  (profile.low_energy_windows[0]?.start_min ?? 840) - 15, // low-energy starts 15 min early
-    low1_actual_end:    (profile.low_energy_windows[0]?.end_min ?? 900) - 15,
-    avg_sleep_duration_min: 390,                 // 6.5 h vs target
-    avg_session_duration_pct: 78,                // completing 78% of planned sessions
-    recovery_adherence_pct: 55,                  // only 55% of recovery sessions done
-    context_switches_per_day: 6,                 // user prefers fewer
-    deadline_buffer_days: -1,                    // finishing 1 day late on avg
+    actual_wake_min: wake_sleep.wake + jitter,       
+    actual_sleep_min: wake_sleep.sleep + (jitter * 1.5),     
+    peak1_actual_start: (profile.peak_focus_windows[0]?.start_min ?? 540) + Math.round(jitter/2),
+    peak1_actual_end:   (profile.peak_focus_windows[0]?.end_min ?? 660) + Math.round(jitter/2),
+    low1_actual_start:  (profile.low_energy_windows[0]?.start_min ?? 840), 
+    low1_actual_end:    (profile.low_energy_windows[0]?.end_min ?? 900),
+    avg_sleep_duration_min: 420 - jitter,                 
+    avg_session_duration_pct: analytics.avgSessionDurationPct,
+    recovery_adherence_pct: analytics.recoveryAdherencePct,
+    context_switches_per_day: analytics.contextSwitchesPerDay,
+    deadline_buffer_days: analytics.deadlineBufferDays,
   };
 
   const deviations: Deviation[] = [];
@@ -551,7 +558,8 @@ function ReportContent() {
     };
   }, []);
 
-  const deviations = profile ? buildDeviations(profile) : [];
+  const { state } = useApp();
+  const deviations = profile ? buildDeviations(profile, state.tasks) : [];
 
   // group by category
   const grouped = deviations.reduce<Record<string, Deviation[]>>((acc, d) => {

@@ -13,6 +13,7 @@ import type {
   SlotCandidate,
   ScheduleConflict,
   ConflictResolution,
+  DaySchedule,
 } from "./types";
 
 import type { CLBreakdown } from "./types";
@@ -94,6 +95,13 @@ const PRIO_WEIGHTS: Record<TaskPriority, number> = {
   normal: 1.0,
   low: 0.7,
 };
+
+/** Map Cognitive Load (CL) total to a specific border class weighting for the UI. */
+export function clToBorderClass(cl: number | undefined | null): string {
+  const absoluteCl = Math.abs(cl || 0);
+  const weight = Math.max(1, Math.min(10, Math.round(absoluteCl)));
+  return `task-block-border-${weight}`;
+}
 
 export function computeCL(
   difficulty: number,
@@ -231,9 +239,40 @@ export function computeSacrificeImpact(
 
 // ── CL Border Weight ──────────────────────────────────────
 
-export function clToBorderClass(cl: number): string {
-  const clamped = Math.max(1, Math.min(10, Math.ceil(Math.abs(cl))));
-  return `task-block-border-${clamped}`;
+/** Determine burnout risk based on last 72h + next 48h of planned CL */
+export function calculateBurnoutRisk(tasks: Task[], scheduledDays: DaySchedule[] = []): "safe" | "watch" | "warning" | "critical" {
+  // 1. Axiom-based calculation (First source of truth)
+  if (scheduledDays.length > 0) {
+    const next3Days = scheduledDays.slice(0, 3);
+    const maxAxioms = Math.max(...next3Days.map(d => d.totalAxiomsUsed), 0);
+    const avgAxioms = next3Days.reduce((sum, d) => sum + d.totalAxiomsUsed, 0) / next3Days.length;
+
+    if (maxAxioms > 45 || avgAxioms > 40) return "critical";
+    if (maxAxioms > 35 || avgAxioms > 30) return "warning";
+    if (maxAxioms > 25) return "watch";
+    return "safe";
+  }
+
+  // 2. Legacy/Fallback based on Task structures (e.g. before first scheduler run)
+  const scheduled = tasks.filter(t => t.scheduledSlot && (t.state === "scheduled" || t.state === "completed"));
+  if (scheduled.length === 0) return "safe";
+
+  const dailyCL: Record<number, number> = {};
+  for (const t of scheduled) {
+    const d = t.scheduledSlot!.day;
+    if (d >= 0 && d <= 2) {
+      dailyCL[d] = (dailyCL[d] || 0) + Math.abs(t.cl);
+    }
+  }
+
+  const values = Object.values(dailyCL);
+  const maxCL = Math.max(...values, 0);
+  const avgCL = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+
+  if (maxCL > 45 || avgCL > 40) return "critical";
+  if (maxCL > 35 || avgCL > 30) return "warning";
+  if (maxCL > 25) return "watch";
+  return "safe";
 }
 
 // ── Core Scheduling Algorithm ──────────────────────────────
@@ -248,11 +287,11 @@ export function runSchedulingAlgorithm(
   const scheduled = tasks.filter((t) => t.state !== "unscheduled");
   const bw = bandwidthCurve;
 
-  const occupied = new Set<string>();
+  const occupied = new Map<string, string>(); // slot key -> subject
   for (const t of scheduled) {
     if (t.scheduledSlot) {
       for (let s = t.scheduledSlot.startSlot; s < t.scheduledSlot.endSlot; s++) {
-        occupied.add(`${t.scheduledSlot.day}_${s}`);
+        occupied.set(`${t.scheduledSlot.day}_${s}`, t.subject || "none");
       }
     }
   }
@@ -303,8 +342,10 @@ export function runSchedulingAlgorithm(
         let minBW = Infinity;
         let energyBonus = 0;
 
+        let contextSwitchCount = 0;
         for (let s = start; s < start + slotsNeeded; s++) {
-          if (occupied.has(`${dIdx}_${s}`) || isSlotBlocked(s, actualDayOfWeek, userProfile)) {
+          const key = `${dIdx}_${s}`;
+          if (occupied.has(key) || isSlotBlocked(s, actualDayOfWeek, userProfile)) {
             slotFree = false;
             break;
           }
@@ -315,10 +356,17 @@ export function runSchedulingAlgorithm(
             if (isPeak) energyBonus += 0.5;
           }
         }
+
+        // Check for subject transitions in proximity (within 2 slots of start)
+        const prevSlotSubject = occupied.get(`${dIdx}_${start - 1}`);
+        if (prevSlotSubject && task.subject && prevSlotSubject !== task.subject) {
+          contextSwitchCount = 1;
+        }
+
         if (!slotFree) continue;
 
         const hoursToDeadline = task.deadline ? (new Date(task.deadline).getTime() - Date.now()) / 3600000 : null;
-        const candidate = computeSlotFitness(start, Math.abs(task.cl), minBW, energyBonus > 0, 0, dIdx, hoursToDeadline);
+        const candidate = computeSlotFitness(start, Math.abs(task.cl), minBW, energyBonus > 0, contextSwitchCount, dIdx, hoursToDeadline);
         candidate.fitnessScore += energyBonus;
         candidate.fitnessScore -= dIdx * 2.0; // Preference for earlier days
         candidate.startSlot = start;
@@ -366,7 +414,7 @@ export function runSchedulingAlgorithm(
 
     placedTasks.push(placedTask);
     for (let s = winner.startSlot; s < winner.startSlot + slotsNeeded; s++) {
-      occupied.add(`${winner.dayIdx}_${s}`);
+      occupied.set(`${winner.dayIdx}_${s}`, task.subject || "none");
     }
 
     reasoningChain.push({
@@ -462,4 +510,66 @@ export function generatePlacementReasoning(
   });
 
   return steps;
+}
+
+// ── Analytics ─────────────────────────────────────────────
+
+export interface SchedulerAnalytics {
+  avgSessionDurationPct: number;
+  recoveryAdherencePct: number;
+  contextSwitchesPerDay: number;
+  deadlineBufferDays: number;
+}
+
+export function calculateAnalytics(tasks: Task[]): SchedulerAnalytics {
+  const completed = tasks.filter(t => t.state === "completed");
+  const scheduled = tasks.filter(t => t.state === "scheduled" || t.state === "completed");
+  const recreational = scheduled.filter(t => t.type === "recreational");
+  const recreationalCompleted = completed.filter(t => t.type === "recreational");
+
+  const avgSessionDurationPct = scheduled.length > 0 ? (completed.length / scheduled.length) * 100 : 100;
+  const recoveryAdherencePct = recreational.length > 0 ? (recreationalCompleted.length / recreational.length) * 100 : 100;
+
+  // Track context switches in the scheduled set
+  let totalSwitches = 0;
+  const daySegments = new Map<number, Task[]>();
+  for (const t of scheduled) {
+    if (!t.scheduledSlot) continue;
+    const d = t.scheduledSlot.day;
+    if (!daySegments.has(d)) daySegments.set(d, []);
+    daySegments.get(d)!.push(t);
+  }
+
+  for (const [day, dayTasks] of daySegments.entries()) {
+    dayTasks.sort((a,b) => a.scheduledSlot!.startSlot - b.scheduledSlot!.startSlot);
+    for (let i = 1; i < dayTasks.length; i++) {
+      if (dayTasks[i].subject !== dayTasks[i-1].subject) {
+        totalSwitches++;
+      }
+    }
+  }
+
+  const daysRepresented = daySegments.size || 1;
+  const switchesPerDay = totalSwitches / daysRepresented;
+
+  // Deadline Buffer: how close to deadlines are we completing?
+  // Average days early(+) or late(-)
+  let totalDelta = 0;
+  let count = 0;
+  for (const t of completed) {
+    if (t.deadline) {
+      const deadline = new Date(t.deadline).getTime();
+      const completionTime = Date.now(); // assume completed now for simplicity
+      const deltaDays = (deadline - completionTime) / (1000 * 3600 * 24);
+      totalDelta += deltaDays;
+      count++;
+    }
+  }
+
+  return {
+    avgSessionDurationPct: Math.round(avgSessionDurationPct),
+    recoveryAdherencePct: Math.round(recoveryAdherencePct),
+    contextSwitchesPerDay: +switchesPerDay.toFixed(1),
+    deadlineBufferDays: count > 0 ? +(totalDelta / count).toFixed(1) : 0
+  };
 }

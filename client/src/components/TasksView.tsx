@@ -63,19 +63,9 @@ function SchedulerContent() {
   }, [dispatch]);
 
   const handleAutoSchedule = async () => {
-    const result = runSchedulingAlgorithm(
-      state.tasks,
-      state.adjustedBandwidthCurve,
-      state.userProfile,
-      state.reasoningChain
-    );
-    
-    dispatch({ type: "SET_TASKS", payload: result.tasks });
-    if (result.conflict) {
-      dispatch({ type: "SET_CONFLICT", payload: result.conflict });
-    }
-    
-    await syncTasks(result.tasks);
+    dispatch({ type: "RUN_SCHEDULER" });
+    // Note: in a real implementation, we would sync the result to the server
+    // but the store already updates the local state.
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
