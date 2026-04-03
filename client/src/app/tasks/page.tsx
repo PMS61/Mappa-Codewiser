@@ -3,8 +3,8 @@
    Interactive scheduler and matrix workspace.
    ═══════════════════════════════════════════════════════════ */
 
-import TasksView from "@/components/TasksView";
+import { redirect } from "next/navigation";
 
 export default function TasksPage() {
-  return <TasksView />;
+  redirect("/dashboard/tasks");
 }
