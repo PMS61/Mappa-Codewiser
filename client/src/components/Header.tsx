@@ -11,6 +11,7 @@ import { usePathname } from "next/navigation";
 import { useApp } from "@/lib/store";
 import { ENERGY_LABELS } from "@/lib/types";
 import type { EnergyLevel } from "@/lib/types";
+import { logoutUser } from "@/app/actions/auth";
 
 export default function Header() {
   const pathname = usePathname();
@@ -76,10 +77,10 @@ export default function Header() {
 
             {/* Nav links */}
             <a href="/dashboard" className={`nav-link ${pathname === '/dashboard' ? 'active' : ''}`}>Dashboard</a>
-            <a href="/tasks" className={`nav-link ${pathname === '/tasks' ? 'active' : ''}`}>Tasks & Matrix</a>
-            <a href="/report" className={`nav-link ${pathname === '/report' ? 'active' : ''}`}>Report</a>
-            <a href="/tutorial" className={`nav-link ${pathname === '/tutorial' ? 'active' : ''}`}>Guide</a>
-            <a href="/profile" className={`nav-link ${pathname === '/profile' ? 'active' : ''}`}>Profile</a>
+            <a href="/dashboard/tasks" className={`nav-link ${pathname === '/dashboard/tasks' ? 'active' : ''}`}>Tasks & Matrix</a>
+            <a href="/dashboard/report" className={`nav-link ${pathname === '/dashboard/report' ? 'active' : ''}`}>Report</a>
+            <a href="/dashboard/tutorial" className={`nav-link ${pathname === '/dashboard/tutorial' ? 'active' : ''}`}>Guide</a>
+            <a href="/dashboard/profile" className={`nav-link ${pathname === '/dashboard/profile' ? 'active' : ''}`}>Profile</a>
             <button
               className="btn btn-sm"
               style={{ marginLeft: 8 }}
@@ -94,6 +95,13 @@ export default function Header() {
               title="Toggle Theme"
             >
               {theme === "system" ? "🌓" : theme === "dark" ? "🌙" : "☀️"}
+            </button>
+            <button
+              onClick={() => logoutUser()}
+              className="nav-link"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--vermillion)", marginLeft: 16 }}
+            >
+              Logout
             </button>
           </div>
         </div>

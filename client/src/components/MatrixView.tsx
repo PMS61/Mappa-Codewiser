@@ -137,10 +137,11 @@ function DroppableSlot({ dayIdx, actualDayOfWeek, slot, tasksStartingHere, isHou
       className={`rule-left ${isHour ? "hour-line" : ""}`}
       style={{
         height: 30, // represents 15 mins
-        background: pattern !== "none" ? `${bgColor} ${pattern}` : bgColor,
+        backgroundColor: bgColor,
+        backgroundImage: pattern !== "none" ? pattern : "none",
         backgroundSize: "12px 12px",
         position: "relative",
-        transition: "background 0.2s, opacity 0.2s",
+        transition: "background-color 0.2s, opacity 0.2s",
         cursor: blocked ? "not-allowed" : "crosshair",
         opacity: isSleep ? 0.6 : 1,
         borderBottom: isHour ? "0.5px solid var(--rule)" : "none",

@@ -141,7 +141,7 @@ export async function addTask(task: Task): Promise<{ success?: boolean; error?: 
     }
     console.log(`[DB] Added task: ${task.id} for user ${userId}`);
     revalidatePath("/dashboard");
-    revalidatePath("/tasks");
+    revalidatePath("/dashboard/tasks");
     return { success: true };
   } catch (error) {
     console.error("Add task failed:", error);
@@ -167,7 +167,7 @@ export async function updateTaskStateAndSlot(
       WHERE id = ${taskId} AND user_id = ${userId};
     `;
     revalidatePath("/dashboard");
-    revalidatePath("/tasks");
+    revalidatePath("/dashboard/tasks");
     return { success: true };
   } catch (error) {
     console.error("Update task failed:", error);
@@ -194,7 +194,7 @@ export async function deleteTask(taskId: string): Promise<{ success?: boolean; e
     }
 
     revalidatePath("/dashboard");
-    revalidatePath("/tasks");
+    revalidatePath("/dashboard/tasks");
     return { success: true };
   } catch (error) {
     console.error("Delete task failed:", error);
@@ -216,7 +216,7 @@ export async function syncTasks(tasks: Task[]): Promise<{ success?: boolean; err
       `;
     }
     revalidatePath("/dashboard");
-    revalidatePath("/tasks");
+    revalidatePath("/dashboard/tasks");
     return { success: true };
   } catch (error) {
     console.error("Sync tasks failed:", error);

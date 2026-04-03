@@ -58,16 +58,16 @@ function DashboardContent() {
   }, [dispatch]);
 
   const scheduled = state.tasks
-    .filter((t) => t.scheduledSlot && t.state !== "unscheduled")
+    .filter((t) => t.scheduledSlot && t.scheduledSlot.day === 0 && t.state !== "unscheduled")
     .sort((a, b) => (a.scheduledSlot?.startSlot ?? 0) - (b.scheduledSlot?.startSlot ?? 0));
 
   const totalCL = state.tasks
-    .filter((t) => t.cl > 0 && t.scheduledSlot)
+    .filter((t) => t.cl > 0 && t.scheduledSlot && t.scheduledSlot.day === 0)
     .reduce((s, t) => s + t.cl, 0);
 
   const recoveryCL = Math.abs(
     state.tasks
-      .filter((t) => t.cl < 0 && t.scheduledSlot)
+      .filter((t) => t.cl < 0 && t.scheduledSlot && t.scheduledSlot.day === 0)
       .reduce((s, t) => s + t.cl, 0),
   );
 
@@ -220,9 +220,6 @@ function DashboardContent() {
                     <div style={{ display: "flex", gap: 16, justifyContent: "center" }}>
                       <button className="btn btn-primary" onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}>
                         + Add Task
-                      </button>
-                      <button className="btn" onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}>
-                        + Log Recreational Activity
                       </button>
                     </div>
                   </div>

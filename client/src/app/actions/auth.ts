@@ -328,3 +328,9 @@ export async function updateUserProfile(updates: {
     return { error: "Failed to update profile." };
   }
 }
+
+export async function logoutUser() {
+  const cookieStore = await cookies();
+  cookieStore.delete("token");
+  redirect("/login");
+}
