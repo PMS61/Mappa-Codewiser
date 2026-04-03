@@ -22,7 +22,8 @@ import {
   getSource, 
   saveSource, 
   clearSources, 
-  clearUnscheduledTasks 
+  clearUnscheduledTasks,
+  runSchedulerAction 
 } from "@/app/actions/tasks";
 import { getUserProfile } from "@/app/actions/auth";
 import { isSlotBlocked, runSchedulingAlgorithm, computeCL } from "@/lib/engine";
@@ -58,14 +59,25 @@ function SchedulerContent() {
       if (!profileErr && user) {
         dispatch({ type: "SET_USER_PROFILE", payload: user });
       }
+
+      // ── Populate Matrix on Load ──
+      if (tasks && tasks.length > 0) {
+        const todayStr = new Date().toISOString().split("T")[0];
+      const { days, updatedWeights, reasoningLog } = await runSchedulerAction(tasks, todayStr);
+      if (days) {
+        dispatch({ type: "SET_SECTIONS", payload: { days, weights: updatedWeights || { morning: 0.4, afternoon: 0.35, evening: 0.25 }, log: reasoningLog || [] } });
+      }
+      }
     }
     load();
   }, [dispatch]);
 
   const handleAutoSchedule = async () => {
-    dispatch({ type: "RUN_SCHEDULER" });
-    // Note: in a real implementation, we would sync the result to the server
-    // but the store already updates the local state.
+    const todayStr = new Date().toISOString().split("T")[0];
+    const { days, updatedWeights, reasoningLog } = await runSchedulerAction(state.tasks, todayStr);
+    if (days) {
+      dispatch({ type: "SET_SECTIONS", payload: { days, weights: updatedWeights || { morning: 0.4, afternoon: 0.35, evening: 0.25 }, log: reasoningLog || [] } });
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

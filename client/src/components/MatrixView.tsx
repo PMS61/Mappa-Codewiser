@@ -186,9 +186,9 @@ export default function MatrixView({ onTaskClick }: { onTaskClick?: (task: any) 
     };
   });
   
-  // Render hours 6:00 to 22:00 for the main view to keep it sane, but represent the full grid.
-  const START_HOUR = 6;
-  const END_HOUR = 23;
+  // Render full 24h grid
+  const START_HOUR = 0;
+  const END_HOUR = 24;
 
   return (
     <div style={{ border: "0.5px solid var(--rule)", background: "var(--card-bg)", overflowX: "auto" }}>
