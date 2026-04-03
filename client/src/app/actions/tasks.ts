@@ -81,6 +81,7 @@ function rowToTask(row: Record<string, unknown>): Task {
     energyRecovery: (row.energy_recovery as number | null) ?? undefined,
     cl: row.cl as number,
     clBreakdown: row.cl_breakdown as Task["clBreakdown"],
+    order: (row.order as number | null) ?? 0,
     scheduledSlot: (row.scheduled_slot as Task["scheduledSlot"]) ?? undefined,
     createdAt: new Date(row.created_at as string).toISOString(),
   };
@@ -108,9 +109,9 @@ export async function getTasks(): Promise<{ tasks?: Task[]; error?: string }> {
           SELECT * FROM tasks WHERE user_id = ${userId} ORDER BY "order" ASC, created_at ASC;
         `;
       } else if (dbError.message && dbError.message.includes('relation "tasks" does not exist')) {
-        await createTasksTable();
+        await createTasksTables();
         result = await sql`
-          SELECT * FROM tasks WHERE user_id = ${userId} ORDER BY created_at ASC
+          SELECT * FROM tasks WHERE user_id = ${userId} ORDER BY "order" ASC, created_at ASC
         `;
       } else {
         throw dbError;
@@ -142,6 +143,58 @@ export async function getTasks(): Promise<{ tasks?: Task[]; error?: string }> {
   }
 }
 
+export async function saveTask(task: Task): Promise<{ success?: boolean; error?: string }> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await createTasksTables();
+    await sql`
+      INSERT INTO tasks (
+        id, user_id, name, type, difficulty, duration, priority, state, subject,
+        deadline, energy_recovery, cl, cl_breakdown, scheduled_slot, "order", created_at
+      ) VALUES (
+        ${task.id},
+        ${userId},
+        ${task.name},
+        ${task.type},
+        ${task.difficulty},
+        ${task.duration},
+        ${task.priority},
+        ${task.state},
+        ${task.subject ?? null},
+        ${task.deadline ?? null},
+        ${task.energyRecovery ?? null},
+        ${task.cl},
+        ${JSON.stringify(task.clBreakdown)}::jsonb,
+        ${task.scheduledSlot ? JSON.stringify(task.scheduledSlot) : null}::jsonb,
+        ${task.order ?? 0},
+        ${task.createdAt}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        type = EXCLUDED.type,
+        difficulty = EXCLUDED.difficulty,
+        duration = EXCLUDED.duration,
+        priority = EXCLUDED.priority,
+        state = EXCLUDED.state,
+        subject = EXCLUDED.subject,
+        deadline = EXCLUDED.deadline,
+        energy_recovery = EXCLUDED.energy_recovery,
+        cl = EXCLUDED.cl,
+        cl_breakdown = EXCLUDED.cl_breakdown,
+        scheduled_slot = EXCLUDED.scheduled_slot,
+        "order" = EXCLUDED."order"
+      WHERE tasks.user_id = EXCLUDED.user_id
+    `;
+
+    return { success: true };
+  } catch (err) {
+    console.error("saveTask failed:", err);
+    return { error: "Failed to save task" };
+  }
+}
+
 /** Alias kept for backward compatibility — same as saveTask (upserts). */
 export async function addTask(task: Task): Promise<{ success?: boolean; error?: string }> {
   const result = await saveTask(task);
@@ -157,26 +210,17 @@ export async function updateTaskState(
   if (!userId) return { error: "Unauthorized" };
 
   try {
-    if (scheduledSlot) {
+    if (scheduledSlot !== undefined) {
       const slotJson = JSON.stringify(scheduledSlot);
       await sql`
-        INSERT INTO tasks (
-          id, user_id, name, type, difficulty, duration, priority, state, subject, 
-          deadline, energy_recovery, cl, cl_breakdown, scheduled_slot, "order", created_at
-        ) VALUES (
-          ${task.id}, ${userId}, ${task.name}, ${task.type}, ${task.difficulty}, ${task.duration}, 
-          ${task.priority}, ${task.state}, ${task.subject || null}, 
-          ${task.deadline || null}, ${task.energyRecovery || null}, ${task.cl}, 
-          ${JSON.stringify(task.clBreakdown)}, 
-          ${task.scheduledSlot ? JSON.stringify(task.scheduledSlot) : null}, 
-          ${task.order || 0}, 
-          ${task.createdAt}
-        )
-        ON CONFLICT (id) DO NOTHING;
+        UPDATE tasks
+        SET state = ${state}, scheduled_slot = ${slotJson}::jsonb
+        WHERE id = ${taskId} AND user_id = ${userId}
       `;
     } else {
       await sql`
-        UPDATE tasks SET state = ${state}
+        UPDATE tasks
+        SET state = ${state}, scheduled_slot = NULL
         WHERE id = ${taskId} AND user_id = ${userId}
       `;
     }

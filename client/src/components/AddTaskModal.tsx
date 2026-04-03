@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { useApp } from "@/lib/store";
 import { TASK_TYPE_LABELS } from "@/lib/types";
-import type { TaskType, TaskPriority } from "@/lib/types";
+import type { Task, TaskType, TaskPriority } from "@/lib/types";
 
 import { addTask } from "@/app/actions/tasks";
 import { computeCL } from "@/lib/engine";
@@ -44,7 +44,7 @@ export default function AddTaskModal() {
         priority,
     );
 
-    const newTask = {
+    const newTask: Task = {
       id: `task-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       state: "unscheduled" as const,
       cl: clBreakdown.total,
@@ -58,6 +58,7 @@ export default function AddTaskModal() {
       subject: subject.trim() || undefined,
       deadline: deadline || undefined,
       energyRecovery: type === "recreational" ? energyRecovery : undefined,
+      order: state.tasks.length,
       scheduledSlot: undefined,
     };
 

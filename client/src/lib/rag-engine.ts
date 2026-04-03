@@ -231,9 +231,9 @@ export async function extractTextFromPDF(file: File, onProgress?: (msg: string) 
 export async function extractTextFromImage(file: File, onProgress?: (msg: string) => void): Promise<string> {
   const tesseract = await getTesseract();
   const worker = await tesseract.createWorker('eng', 1, {
-    logger: m => {
+    logger: (m: { status?: string; progress?: number }) => {
       if (m.status === 'recognizing text' && onProgress) {
-        onProgress(`OCR: ${Math.round(m.progress * 100)}%`);
+        onProgress(`OCR: ${Math.round((m.progress ?? 0) * 100)}%`);
       }
     }
   });

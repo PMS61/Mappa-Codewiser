@@ -6,26 +6,32 @@
 
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { AppProvider, useApp } from "@/lib/store";
-import { formatDateHeading, slotToTime, formatDuration } from "@/lib/engine";
-import Header from "@/components/Header";
-import BandwidthCurve from "@/components/BandwidthCurve";
-import TaskBlock from "@/components/TaskBlock";
-import ReasoningChain from "@/components/ReasoningChain";
-import AddTaskModal from "@/components/AddTaskModal";
-import ConflictPanel from "@/components/ConflictPanel";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getUserProfile } from "@/app/actions/auth";
 import {
+  deleteTask,
   getTasks,
-  saveTask,
   saveBulkTasks,
   saveSchedule,
-  deleteTask,
   updateTaskStateAndSlot,
 } from "@/app/actions/tasks";
+import AddTaskModal from "@/components/AddTaskModal";
+import BandwidthCurve from "@/components/BandwidthCurve";
+import ConflictPanel from "@/components/ConflictPanel";
+import Header from "@/components/Header";
+import ReasoningChain from "@/components/ReasoningChain";
+import TaskBlock from "@/components/TaskBlock";
+import { formatDateHeading, formatDuration, slotToTime } from "@/lib/engine";
 import { priorityToNumber, taskTypeToSchedulerType } from "@/lib/scheduler";
+import { AppProvider, useApp } from "@/lib/store";
 import { TASK_TYPE_LABELS } from "@/lib/types";
 import type { Task, ReasoningStep } from "@/lib/types";
+import {
+  readStoredUserProfile,
+  toDashboardProfilePayload,
+  toStoredUserProfileFromServerUser,
+  writeStoredUserProfile,
+} from "@/lib/userProfileStorage";
 
 function DashboardContent() {
   const { state, dispatch } = useApp();
@@ -45,6 +51,14 @@ function DashboardContent() {
     if (isInitializedRef.current) return;
     isInitializedRef.current = true;
 
+    const localProfile = readStoredUserProfile();
+    if (localProfile) {
+      dispatch({
+        type: "SET_USER_PROFILE",
+        payload: toDashboardProfilePayload(localProfile),
+      });
+    }
+
     getTasks().then(({ tasks, error }) => {
       setIsLoadingTasks(false);
       if (error || !tasks) return; // fallback to sample data
@@ -54,6 +68,22 @@ function DashboardContent() {
           tasks.map((t) => [t.id, `${t.state}::${t.scheduledSlot?.startSlot ?? ""}::${t.scheduledSlot?.day ?? ""}`]),
         );
       }
+    });
+
+    getUserProfile().then(({ user, error }) => {
+      if (error || !user) return;
+
+      const normalized = toStoredUserProfileFromServerUser(user);
+      if (normalized) {
+        writeStoredUserProfile(normalized);
+        dispatch({
+          type: "SET_USER_PROFILE",
+          payload: toDashboardProfilePayload(normalized),
+        });
+        return;
+      }
+
+      dispatch({ type: "SET_USER_PROFILE", payload: user });
     });
   }, [dispatch]);
 
@@ -73,7 +103,7 @@ function DashboardContent() {
     }
 
     for (const task of toSave) {
-      saveTask(task); // fire-and-forget; UI already updated
+      saveBulkTasks([task]); // fire-and-forget; UI already updated
     }
   }, [state.tasks, isLoadingTasks]);
 
