@@ -6,7 +6,10 @@ export interface MatrixSlot {
   taskId?: string;
   isPeak: boolean;
   isLow: boolean;
-  isBlocked: boolean;
+  isSleep: boolean;
+  isFixedCommitment: boolean;
+  isHardExclusion: boolean;
+  isAvailable: boolean;
   actualCompletion: boolean;
 }
 
@@ -31,7 +34,10 @@ export async function getUserMatrix(): Promise<MatrixSlot[][] | { error: string 
         cl: 0,
         isPeak: false,
         isLow: false,
-        isBlocked: false,
+        isSleep: false,
+        isFixedCommitment: false,
+        isHardExclusion: false,
+        isAvailable: true,
         actualCompletion: false,
       }))
     );
@@ -39,7 +45,7 @@ export async function getUserMatrix(): Promise<MatrixSlot[][] | { error: string 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Apply Profile Overlays (Peaks, Lows, Blocked)
+    // Apply Profile Overlays
     for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
       const currentDay = new Date(today);
       currentDay.setDate(today.getDate() + dayIdx);
@@ -47,33 +53,41 @@ export async function getUserMatrix(): Promise<MatrixSlot[][] | { error: string 
       
       for (let slot = 0; slot < 96; slot++) {
         const slotMins = slot * 15;
+        const currentSlot = matrix[dayIdx][slot];
         
         // 1. Peaks
         if (profile.peak_focus_windows?.some((w: any) => slotMins >= w.start_min && slotMins < w.end_min)) {
-          matrix[dayIdx][slot].isPeak = true;
+          currentSlot.isPeak = true;
         }
         
         // 2. Lows
         if (profile.low_energy_windows?.some((w: any) => slotMins >= w.start_min && slotMins < w.end_min)) {
-          matrix[dayIdx][slot].isLow = true;
+          currentSlot.isLow = true;
         }
         
-        // 3. Sleep (Blocked)
+        // 3. Sleep
         const { wake_time, sleep_time } = profile;
         if (wake_time !== null && sleep_time !== null) {
           if (sleep_time > wake_time) {
-            if (slotMins >= sleep_time || slotMins < wake_time) matrix[dayIdx][slot].isBlocked = true;
+            if (slotMins >= sleep_time || slotMins < wake_time) currentSlot.isSleep = true;
           } else {
-            if (slotMins >= sleep_time && slotMins < wake_time) matrix[dayIdx][slot].isBlocked = true;
+            if (slotMins >= sleep_time && slotMins < wake_time) currentSlot.isSleep = true;
           }
         }
         
-        // 4. Fixed Commitments & Hard Exclusions (Blocked)
+        // 4. Fixed Commitments
         if (profile.fixed_commitments?.some((c: any) => c.days.includes(actualDayOfWeek) && slotMins >= c.start_min && slotMins < c.end_min)) {
-           matrix[dayIdx][slot].isBlocked = true;
+          currentSlot.isFixedCommitment = true;
         }
+
+        // 5. Hard Exclusions
         if (profile.hard_exclusions?.some((c: any) => c.days.includes(actualDayOfWeek) && slotMins >= c.start_min && slotMins < c.end_min)) {
-           matrix[dayIdx][slot].isBlocked = true;
+          currentSlot.isHardExclusion = true;
+        }
+
+        // 6. Availability Calculation (Logical Inverse of any blocking state)
+        if (currentSlot.isSleep || currentSlot.isFixedCommitment || currentSlot.isHardExclusion) {
+          currentSlot.isAvailable = false;
         }
       }
     }

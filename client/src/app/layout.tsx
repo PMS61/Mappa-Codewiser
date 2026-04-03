@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Playfair_Display, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import { AppProvider } from "@/lib/store";
 
 const playfair = Playfair_Display({
   variable: "--font-playfair",
@@ -31,7 +32,11 @@ export default function RootLayout({
       data-scroll-behavior="smooth"
       className={`${playfair.variable} ${ibmPlexMono.variable}`}
     >
-      <body>{children}</body>
+      <body>
+        <AppProvider>
+          {children}
+        </AppProvider>
+      </body>
     </html>
   );
 }
