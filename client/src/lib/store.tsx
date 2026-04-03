@@ -83,7 +83,9 @@ type Action =
   | { type: "SET_CONFLICT"; payload: ScheduleConflict | null }
   | { type: "RESOLVE_CONFLICT"; payload: { taskId: string; resolution: string } }
   | { type: "GENERATE_REPORT" }
-  | { type: "SCHEDULE_TASK_MANUALLY"; payload: { taskId: string; startSlot: number, day: number } };
+  | { type: "SCHEDULE_TASK_MANUALLY"; payload: { taskId: string; startSlot: number, day: number } }
+  | { type: "INIT_TASKS"; payload: Task[] }
+  | { type: "BULK_UPDATE_TASKS"; payload: Task[] };
 
 // ── ID Generator ──────────────────────────────────────────
 
@@ -416,6 +418,35 @@ function reducer(state: AppState, action: Action): AppState {
         } : t),
         reasoningChain: [...state.reasoningChain, newReasoning]
       };
+    }
+
+    case "INIT_TASKS": {
+      // Replace sample tasks with DB tasks on first load.
+      // If the store already has user-created tasks (not sample data), merge.
+      return {
+        ...state,
+        tasks: action.payload,
+        reasoningChain: [
+          {
+            number: 1,
+            text: `SCHEDULER INITIALIZED. Loaded ${action.payload.length} tasks from database.`,
+            isRule: true,
+          },
+        ],
+      };
+    }
+
+    case "BULK_UPDATE_TASKS": {
+      // Merge incoming tasks (from API schedule result) into state.
+      // Tasks in payload overwrite existing ones by id.
+      const updateMap = new Map(action.payload.map((t) => [t.id, t]));
+      const merged = state.tasks.map((t) => updateMap.get(t.id) ?? t);
+      // Add any new tasks not already in state
+      const existingIds = new Set(state.tasks.map((t) => t.id));
+      for (const t of action.payload) {
+        if (!existingIds.has(t.id)) merged.push(t);
+      }
+      return { ...state, tasks: merged };
     }
 
     default:

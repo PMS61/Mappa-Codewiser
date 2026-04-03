@@ -6,7 +6,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { AppProvider, useApp } from "@/lib/store";
 import { formatDateHeading, slotToTime, formatDuration } from "@/lib/engine";
 import Header from "@/components/Header";
@@ -15,10 +15,209 @@ import TaskBlock from "@/components/TaskBlock";
 import ReasoningChain from "@/components/ReasoningChain";
 import AddTaskModal from "@/components/AddTaskModal";
 import ConflictPanel from "@/components/ConflictPanel";
+import { getTasks, saveTask, saveBulkTasks, saveSchedule } from "@/app/actions/tasks";
+import { priorityToNumber, taskTypeToSchedulerType } from "@/lib/scheduler";
+import type { Task, ReasoningStep } from "@/lib/types";
 
 function DashboardContent() {
   const { state, dispatch } = useApp();
   const [showReasoning, setShowReasoning] = useState(false);
+  const [isLoadingTasks, setIsLoadingTasks] = useState(true);
+  const [isScheduling, setIsScheduling] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+
+  // Tracks the last-persisted snapshot of each task (by id → serialized state+slot)
+  const prevTasksSnapRef = useRef<Map<string, string>>(new Map());
+  const isInitializedRef = useRef(false);
+
+  // ── Load tasks from DB on mount ────────────────────────
+  useEffect(() => {
+    if (isInitializedRef.current) return;
+    isInitializedRef.current = true;
+
+    getTasks().then(({ tasks, error }) => {
+      setIsLoadingTasks(false);
+      if (error || !tasks) return; // fallback to sample data if not authed/error
+      if (tasks.length > 0) {
+        dispatch({ type: "INIT_TASKS", payload: tasks });
+        // Seed the snapshot so we don't re-write everything immediately
+        prevTasksSnapRef.current = new Map(
+          tasks.map((t) => [t.id, `${t.state}::${t.scheduledSlot?.startSlot ?? ""}`]),
+        );
+      }
+    });
+  }, [dispatch]);
+
+  // ── Persist tasks to DB (only changed/new tasks) ──────
+  useEffect(() => {
+    if (isLoadingTasks) return; // wait for initial load before persisting
+
+    const snap = prevTasksSnapRef.current;
+    const toSave: Task[] = [];
+
+    for (const task of state.tasks) {
+      const key = `${task.state}::${task.scheduledSlot?.startSlot ?? ""}::${task.scheduledSlot?.day ?? ""}`;
+      if (snap.get(task.id) !== key) {
+        toSave.push(task);
+        snap.set(task.id, key);
+      }
+    }
+
+    for (const task of toSave) {
+      saveTask(task); // fire-and-forget; UI already updated
+    }
+  }, [state.tasks, isLoadingTasks]);
+
+  // ── API-driven scheduler ───────────────────────────────
+  const runApiScheduler = useCallback(async () => {
+    setIsScheduling(true);
+    setScheduleError(null);
+
+    // Map app tasks → scheduler format
+    const schedulerTasks = state.tasks
+      .filter((t) => t.state === "unscheduled" || t.state === "rescheduled")
+      .map((t) => ({
+        id: t.id,
+        title: t.name,
+        difficulty: t.difficulty,
+        priority: priorityToNumber(t.priority),
+        duration: t.duration,
+        type: taskTypeToSchedulerType(t.type),
+        date: t.deadline?.split("T")[0],
+      }));
+
+    if (schedulerTasks.length === 0) {
+      // Fall back to the local scheduler for already-scheduled tasks
+      dispatch({ type: "RUN_SCHEDULER" });
+      setIsScheduling(false);
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tasks: schedulerTasks,
+          startDate: new Date().toISOString().split("T")[0],
+        }),
+      });
+
+      if (!res.ok) {
+        const { error } = await res.json();
+        setScheduleError(error ?? "Schedule API failed");
+        setIsScheduling(false);
+        return;
+      }
+
+      const result = await res.json();
+      const { schedule, meta } = result as {
+        schedule: Record<string, Array<{
+          id: string; scheduledDate: string; energyCost: number; score: number;
+        }>>;
+        meta: { energyByDay: Record<string, { used: number; remaining: number }> };
+      };
+
+      // Build reasoning chain from schedule result
+      const newReasoning: ReasoningStep[] = [
+        ...state.reasoningChain,
+        {
+          number: state.reasoningChain.length + 1,
+          text: `API SCHEDULER RUN: Energy model applied. ${schedulerTasks.filter(t => t.type === "work").length} work tasks, ${schedulerTasks.filter(t => t.type === "energy_gain").length} energy tasks.`,
+          isRule: true,
+        },
+      ];
+
+      // Map schedule result back to Task state updates
+      const updatedTasks: Task[] = [...state.tasks];
+      let reasoningNum = newReasoning.length + 1;
+
+      for (const [date, dayEntries] of Object.entries(schedule)) {
+        const dayEnergy = meta.energyByDay[date];
+        newReasoning.push({
+          number: reasoningNum++,
+          text: `DAY ${date}: ${dayEntries.filter((e) => e.energyCost > 0).length} tasks scheduled. Energy used: ${dayEnergy?.used ?? "?"} / 50. Remaining: ${dayEnergy?.remaining ?? "?"}`,
+          isRule: true,
+        });
+
+        for (const entry of dayEntries) {
+          if (entry.energyCost === 0) continue; // energy_gain entries don't update task state
+
+          const taskIdx = updatedTasks.findIndex((t) => t.id === entry.id);
+          if (taskIdx === -1) continue;
+
+          // Convert date to slot (schedule API doesn't assign slots, we assign day-level)
+          // We place tasks sequentially using the existing slot logic in the store
+          const task = updatedTasks[taskIdx];
+          const slotsNeeded = Math.ceil(task.duration / 15);
+          const dayOffset = Math.max(
+            0,
+            Math.round(
+              (new Date(date).getTime() - new Date().setHours(0, 0, 0, 0)) / 86400000,
+            ),
+          );
+
+          // Assign to morning slot (slot 36 = 9:00 AM) + offset for ordering within day
+          const baseSlot = 36;
+          const posInDay = dayEntries.filter(e => e.energyCost > 0).findIndex(e => e.id === entry.id);
+          const startSlot = baseSlot + posInDay * (slotsNeeded + 1);
+
+          updatedTasks[taskIdx] = {
+            ...task,
+            state: "scheduled",
+            scheduledSlot: {
+              startSlot,
+              endSlot: startSlot + slotsNeeded,
+              day: dayOffset,
+              fitnessScore: entry.score,
+              reasoningSteps: [
+                {
+                  number: 1,
+                  text: `Energy cost: ${entry.energyCost.toFixed(2)} / Score: ${entry.score.toFixed(3)}`,
+                  isRule: true,
+                  relatedTaskId: entry.id,
+                },
+                {
+                  number: 2,
+                  text: `ACTION: Scheduled on ${date} (Day +${dayOffset})`,
+                  isAction: true,
+                  relatedTaskId: entry.id,
+                },
+              ],
+            },
+          };
+
+          newReasoning.push({
+            number: reasoningNum++,
+            text: `SCHEDULED: "${task.name}" → ${date}. E_task=${entry.energyCost.toFixed(2)}, score=${entry.score.toFixed(3)}`,
+            isAction: true,
+            relatedTaskId: entry.id,
+          });
+        }
+
+        // Persist daily schedule to DB
+        saveSchedule(
+          date,
+          updatedTasks.filter((t) => t.scheduledSlot?.day !== undefined),
+          dayEnergy?.used ?? 0,
+          dayEnergy?.remaining ?? 50,
+        );
+      }
+
+      dispatch({ type: "BULK_UPDATE_TASKS", payload: updatedTasks });
+      // Also update the reasoning chain via a local scheduler run to merge
+      dispatch({ type: "SET_DAY_PHASE", payload: "active" });
+
+      // Persist all updated tasks
+      saveBulkTasks(updatedTasks);
+    } catch (err) {
+      console.error("Schedule API error:", err);
+      setScheduleError("Network error. Falling back to local scheduler.");
+      dispatch({ type: "RUN_SCHEDULER" });
+    } finally {
+      setIsScheduling(false);
+    }
+  }, [state.tasks, state.reasoningChain, dispatch]);
 
   const scheduled = state.tasks
     .filter((t) => t.scheduledSlot && t.state !== "unscheduled")
@@ -123,8 +322,13 @@ function DashboardContent() {
       {/* ── Scheduler Controls ── */}
       <section className="container section-rule" style={{ padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-          <button className="btn btn-sm btn-primary" onClick={() => dispatch({ type: "RUN_SCHEDULER" })}>
-            Run Scheduler
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={runApiScheduler}
+            disabled={isScheduling}
+            style={{ opacity: isScheduling ? 0.6 : 1, cursor: isScheduling ? "not-allowed" : "pointer" }}
+          >
+            {isScheduling ? "Scheduling…" : "Run Scheduler"}
           </button>
           <button
             className="btn btn-sm"
@@ -132,10 +336,20 @@ function DashboardContent() {
           >
             {showReasoning ? "Hide Reasoning" : `Reasoning Chain (${state.reasoningChain.length})`}
           </button>
+          {isLoadingTasks && (
+            <span className="meta-text" style={{ color: "var(--muted)" }}>Loading tasks…</span>
+          )}
         </div>
-        <span className="meta-text">
-          {state.tasks.filter((t) => t.state === "unscheduled").length} unscheduled
-        </span>
+        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+          {scheduleError && (
+            <span className="meta-text" style={{ color: "var(--vermillion)", fontSize: 11 }}>
+              [!] {scheduleError}
+            </span>
+          )}
+          <span className="meta-text">
+            {state.tasks.filter((t) => t.state === "unscheduled").length} unscheduled
+          </span>
+        </div>
       </section>
 
       {/* ── Main content ── */}
