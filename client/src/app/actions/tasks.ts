@@ -8,7 +8,10 @@
 import { sql } from "@vercel/postgres";
 import { cookies } from "next/headers";
 import { verify } from "jsonwebtoken";
-import type { Task } from "@/lib/types";
+import type { Task, DaySchedule, SchedulerOutput, SectionName, RunSchedulerResult } from "@/lib/types";
+import { runScheduler, extractScheduleChunks } from "@/lib/schedule";
+import { getUserProfile } from "./auth";
+import { computeUpdatedWeights } from "@/lib/feedback";
 
 // ── Auth Helper ───────────────────────────────────────────
 
@@ -662,4 +665,108 @@ export async function clearUnscheduledTasks(): Promise<{ success?: boolean; erro
     console.error("clearUnscheduledTasks failed:", err);
     return { error: "Failed to clear unscheduled tasks" };
   }
+}
+// ── Scheduling Engine Interface ────────────────────────────
+
+/**
+ * Server action: runs the full deterministic scheduling pipeline.
+ */
+export async function runSchedulerAction(
+  tasks: Task[],
+  startDate?: string,
+): Promise<RunSchedulerResult> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  try {
+    await createTasksTables();
+
+    // ── 1. Fetch section weights from DB ──────────────────
+    const weightsResult = await getSectionWeights();
+    const sectionWeights = weightsResult.weights ?? {
+      morning: 0.40,
+      afternoon: 0.35,
+      evening: 0.25,
+    };
+
+    // ── 2. Fetch user profile for blocked zones ────────────
+    const profileRes = await getUserProfile();
+    const profile = profileRes.user ? {
+      peakFocusWindows: profileRes.user.peak_focus_windows || [],
+      lowEnergyWindows: profileRes.user.low_energy_windows || [],
+      fixedCommitments: profileRes.user.fixed_commitments || [],
+      hardExclusions: profileRes.user.hard_exclusions || [],
+      wakeTime: profileRes.user.wake_time,
+      sleepTime: profileRes.user.sleep_time,
+    } : null;
+
+    // ── 3. Run the scheduling pipeline ─────────────────────
+    const output: SchedulerOutput = runScheduler({
+      tasks,
+      startDate,
+      sectionWeights,
+      userProfile: profile,
+    });
+
+    // ── 4. Persist task chunks to DB ───────────────────────
+    const chunksToSave = extractScheduleChunks(output);
+    if (chunksToSave.length > 0) {
+      await saveChunks(chunksToSave);
+    }
+
+    // ── 5. Apply feedback to update weights ────────────────
+    const perfResult = await getRecentSectionPerformance(14);
+    let updatedWeights = sectionWeights;
+
+    if (perfResult.records && perfResult.records.length > 0) {
+      const perfRecords = perfResult.records.map((r) => ({
+        sectionName: r.sectionName as SectionName,
+        scheduledAxioms: 0, 
+        actualAxioms: 0,
+        efficiencyRatio: r.efficiencyRatio,
+        recordedAt: new Date().toISOString(),
+      }));
+
+      updatedWeights = computeUpdatedWeights(
+        sectionWeights as Record<SectionName, number>,
+        perfRecords,
+      );
+
+      // Persist updated weights
+      await updateSectionWeightsDB(updatedWeights);
+    }
+
+    return {
+      days: output.days,
+      unscheduled: output.unscheduled,
+      reasoningLog: output.reasoningLog,
+      updatedWeights,
+    };
+  } catch (err) {
+    console.error("runSchedulerAction failed:", err);
+    return { error: "Scheduling failed. Please try again." };
+  }
+}
+
+/**
+ * Mark a section as complete and record performance metrics.
+ */
+export async function markSectionComplete(
+  sectionName: SectionName,
+  scheduledAxioms: number,
+  actualAxioms: number,
+): Promise<{ error?: string }> {
+  const userId = await getUserId();
+  if (!userId) return { error: "Unauthorized" };
+
+  const efficiencyRatio = scheduledAxioms > 0
+    ? actualAxioms / scheduledAxioms
+    : 1;
+
+  return recordSectionPerformance(
+    sectionName,
+    scheduledAxioms,
+    actualAxioms,
+    efficiencyRatio,
+  );
 }

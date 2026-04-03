@@ -9,6 +9,7 @@
 import { slotToTime, isSlotBlocked } from "@/lib/engine";
 import { useApp } from "@/lib/store";
 
+import { Task } from "@/lib/types";
 import { useDroppable, useDraggable } from "@dnd-kit/core";
 
 function DraggableMatrixTask({ task, durationSlots, onTaskClick }: { task: any, durationSlots: number, onTaskClick?: (task: any) => void }) {
@@ -69,9 +70,11 @@ function DraggableMatrixTask({ task, durationSlots, onTaskClick }: { task: any, 
 }
 
 function DroppableSlot({ dayIdx, actualDayOfWeek, slot, tasksStartingHere, isHour, onTaskClick }: { dayIdx: number, actualDayOfWeek: number, slot: number, tasksStartingHere: any[], isHour: boolean, onTaskClick?: (task: any) => void }) {
-  const { state } = useApp();
+  const { state, dispatch } = useApp();
   const id = `slot-${dayIdx}-${slot}`;
   const { isOver, setNodeRef } = useDroppable({ id });
+
+  const isConfirmed = state.confirmedSlots.includes(id);
 
   const profile = state.userProfile;
   const slotMinutes = slot * 15;
@@ -126,6 +129,12 @@ function DroppableSlot({ dayIdx, actualDayOfWeek, slot, tasksStartingHere, isHou
     bgColor = "var(--low-bg)";
   }
 
+  if (isConfirmed) {
+    // Distinct cross-hatch pattern for confirmed slots
+    pattern = "repeating-linear-gradient(0deg, transparent, transparent 1px, var(--rule) 1px, var(--rule) 2px), repeating-linear-gradient(90deg, transparent, transparent 1px, var(--rule) 1px, var(--rule) 2px)";
+    bgColor = "var(--card-bg)";
+  }
+
   if (isOver) {
     bgColor = blocked ? "var(--vermillion)" : "var(--bg-invert)";
     pattern = "none";
@@ -146,7 +155,12 @@ function DroppableSlot({ dayIdx, actualDayOfWeek, slot, tasksStartingHere, isHou
         opacity: isSleep ? 0.6 : 1,
         borderBottom: isHour ? "0.5px solid var(--rule)" : "none",
       }}
-      title={isSleep ? "Sleep Wakeup/Windown Window" : blocked ? `Blocked: ${blockLabel}` : isPeak ? "Peak Focus Window" : isLow ? "Low Energy Window" : undefined}
+      title={isConfirmed ? "Confirmed Productive Window" : isSleep ? "Sleep Wakeup/Windown Window" : blocked ? `Blocked: ${blockLabel}` : isPeak ? "Peak Focus Window" : isLow ? "Low Energy Window" : undefined}
+      onClick={() => {
+        if (!blocked && tasksStartingHere.length === 0) {
+          dispatch({ type: "TOGGLE_CONFIRM_SLOT", payload: id });
+        }
+      }}
     >
       {tasksStartingHere.map(task => {
         const durationSlots = task.scheduledSlot!.endSlot - task.scheduledSlot!.startSlot;
@@ -227,9 +241,30 @@ export default function MatrixView({ onTaskClick }: { onTaskClick?: (task: any) 
 
                 {/* Day columns */}
                 {days.map((dayInfo, dIdx) => {
-                  const tasksStartingHere = state.tasks.filter(
-                    t => t.state === "scheduled" && t.scheduledSlot?.startSlot === slot && t.scheduledSlot?.day === dIdx
-                  );
+                  const dayData = state.scheduledDays.find(d => d.dayOffset === dIdx);
+                  const tasksStartingHere = dayData?.sections.flatMap(sec => 
+                    sec.tasks.filter(st => st.startSlot === slot)
+                      .map(st => {
+                        const originalTask = state.tasks.find(t => t.id === st.taskId);
+                        if (!originalTask) return null;
+                        const durSlots = Math.max(1, Math.ceil(st.duration / 15));
+                        // Return composite object with pseudo-slot for UI logic
+                        return { 
+                          ...originalTask, 
+                          id: st.chunkId || st.taskId, // unique id for dnd and keys
+                          name: st.taskName,
+                          duration: st.duration,
+                          scheduledSlot: {
+                            startSlot: st.startSlot!,
+                            endSlot: st.startSlot! + durSlots,
+                            day: dIdx,
+                            fitnessScore: 0,
+                            reasoningSteps: []
+                          }
+                        };
+                      })
+                      .filter(Boolean) as Task[]
+                  ) || [];
 
                   return (
                     <DroppableSlot 

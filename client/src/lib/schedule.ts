@@ -20,6 +20,7 @@ import type {
   DaySchedule,
   SchedulerOutput,
   TimeSection,
+  UserProfile,
 } from "./types";
 
 import {
@@ -73,6 +74,58 @@ function slotKey(day: number, section: SectionName): string {
   return `${day}:${section}`;
 }
 
+/** Check if a slot is blocked by user profile (sleep, fixed, hard exclusions) */
+function isSlotBlockedManual(slot: number, dayOffset: number, profile: UserProfile | null): boolean {
+  if (!profile) return false;
+  const slotMins = slot * 15;
+  
+  // 1. Calculate actual day of week based on a reference (Sunday = 0)
+  // We'll use the relative dayOffset from today.
+  const today = new Date().getDay();
+  const dayOfWeek = (today + dayOffset) % 7;
+
+  // 2. Sleep
+  const { wakeTime, sleepTime } = profile;
+  if (wakeTime !== null && sleepTime !== null) {
+     if (sleepTime > wakeTime) {
+       // Normal sleep (e.g. 10pm - 7am)
+       if (slotMins >= sleepTime || slotMins < wakeTime) return true;
+     } else {
+       // Inverted sleep (e.g. 7am - 2pm?)
+       if (slotMins >= sleepTime && slotMins < wakeTime) return true;
+     }
+  }
+
+  // 3. Fixed Commitments (e.g. classes)
+  if (profile.fixedCommitments?.some((c: any) => c.days.includes(dayOfWeek) && slotMins >= c.start_min && slotMins < c.end_min)) {
+    return true;
+  }
+
+  // 4. Hard Exclusions (e.g. chores)
+  if (profile.hardExclusions?.some((c: any) => c.days.includes(dayOfWeek) && slotMins >= c.start_min && slotMins < c.end_min)) {
+    return true;
+  }
+
+  return false;
+}
+
+/** Recursively find the next available slot block of N size starting from currentSlot */
+function findAvailableSlotBlock(start: number, size: number, day: number, profile: UserProfile | null): number {
+  let curr = start;
+  while (curr < 96) {
+    let blocked = false;
+    for (let s = curr; s < curr + size; s++) {
+      if (s >= 96 || isSlotBlockedManual(s, day, profile)) {
+        blocked = true;
+        break;
+      }
+    }
+    if (!blocked) return curr;
+    curr++;
+  }
+  return start; // Fallback to avoid infinite loop
+}
+
 // ── Empty Section Schedule ─────────────────────────────────
 
 function emptySection(
@@ -95,6 +148,8 @@ export interface SchedulerInput {
   startDate?: string;
   /** Section weights — from DB feedback or defaults */
   sectionWeights?: Partial<Record<SectionName, number>>;
+  /** User profile for blocked zones */
+  userProfile?: UserProfile | null;
 }
 
 /**
@@ -315,9 +370,24 @@ export function runScheduler(input: SchedulerInput): SchedulerOutput {
   for (const [dayOffset, secMap] of [...dayMap.entries()].sort(
     ([a], [b]) => a - b,
   )) {
-    const sectionSchedules: SectionSchedule[] = SECTION_ORDER.map(
-      (name) => secMap.get(name)!,
-    );
+    // Determine the actual day of week for this offset
+    const refDate = input.startDate ? new Date(`${input.startDate}T12:00:00Z`) : new Date();
+    const currentDayOfWeek = (refDate.getDay() + dayOffset) % 7;
+
+    const sectionSchedules: SectionSchedule[] = SECTION_ORDER.map((name) => {
+      const sec = secMap.get(name)!;
+      let currentSlot = name === "morning" ? 24 : name === "afternoon" ? 48 : 72;
+      
+      for (const item of sec.tasks) {
+        const slotsNeeded = Math.max(1, Math.ceil(item.duration / 15));
+        // Find next spot in the section (or subsequent) that isn't blocked
+        currentSlot = findAvailableSlotBlock(currentSlot, slotsNeeded, currentDayOfWeek, input.userProfile || null);
+        
+        item.startSlot = currentSlot;
+        currentSlot += slotsNeeded;
+      }
+      return sec;
+    });
 
     const totalUsed = sectionSchedules.reduce(
       (sum, s) => sum + s.axiomUsed,
@@ -352,6 +422,50 @@ export function runScheduler(input: SchedulerInput): SchedulerOutput {
   );
 
   return { days, unscheduled, reasoningLog };
+}
+
+/**
+ * Extracts a flattened list of task chunks from the scheduler output,
+ * suitable for database persistence.
+ */
+export function extractScheduleChunks(output: SchedulerOutput) {
+  const allChunks: Array<{
+    id: string;
+    parentTaskId: string;
+    chunkIndex: number;
+    totalChunks: number;
+    duration: number;
+    scheduledDay: number;
+    section: string;
+    axiomCost: number;
+    state: string;
+  }> = [];
+
+  for (const day of output.days) {
+    for (const section of day.sections) {
+      for (const item of section.tasks) {
+        if (item.chunkId) {
+          // Identify siblings to count total chunks for this task
+          const siblings = day.sections.flatMap(s => 
+            s.tasks.filter(t => t.taskId === item.taskId && t.chunkId)
+          );
+          
+          allChunks.push({
+            id: item.chunkId,
+            parentTaskId: item.taskId,
+            chunkIndex: parseInt(item.chunkId.split("_chunk_")[1] ?? "0"),
+            totalChunks: siblings.length || 1,
+            duration: item.duration,
+            scheduledDay: day.dayOffset,
+            section: section.section,
+            axiomCost: item.axiomCost,
+            state: "scheduled",
+          });
+        }
+      }
+    }
+  }
+  return allChunks;
 }
 
 // ── Re-exports for backward compat ────────────────────────

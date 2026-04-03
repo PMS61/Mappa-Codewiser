@@ -112,6 +112,16 @@ export interface CLBreakdown {
   total: number;
 }
 
+// ── User Profiling & Calibration ───────────────────────────
+export interface UserProfile {
+  peakFocusWindows: Array<{ start_min: number; end_min: number }>;
+  lowEnergyWindows: Array<{ start_min: number; end_min: number }>;
+  fixedCommitments: Array<{ name: string; days: number[]; start_min: number; end_min: number }>;
+  hardExclusions: Array<{ name: string; days: number[]; start_min: number; end_min: number }>;
+  wakeTime: number; // minutes from midnight
+  sleepTime: number; // minutes from midnight
+}
+
 export interface ScheduledSlot {
   startSlot: number; // 0-95 (15-min increments)
   endSlot: number;
@@ -245,6 +255,7 @@ export interface SectionSchedule {
     axiomCost: number;
     axiomGain: number; // for recreational
     isRecreational: boolean;
+    startSlot?: number; // 0-95, for UI grid placement
   }>;
   axiomBudget: number;
   axiomUsed: number;
@@ -267,6 +278,15 @@ export interface SchedulerOutput {
   days: DaySchedule[];
   unscheduled: string[]; // taskIds that could not be placed
   reasoningLog: string[];
+}
+
+/** Result of the schedule server action */
+export interface RunSchedulerResult {
+  days?: DaySchedule[];
+  unscheduled?: string[];
+  reasoningLog?: string[];
+  updatedWeights?: { morning: number; afternoon: number; evening: number };
+  error?: string;
 }
 
 /** DB record for section performance feedback */

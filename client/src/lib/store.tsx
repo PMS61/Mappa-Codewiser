@@ -35,8 +35,10 @@ import {
   durationToSlots,
   isSlotBlocked,
   runSchedulingAlgorithm,
+  calculateBurnoutRisk,
 } from "./engine";
 import { generateDailyInsight } from "./templates";
+import { runScheduler } from "./schedule";
 
 // ── State Shape ───────────────────────────────────────────
 
@@ -55,6 +57,8 @@ export interface AppState {
   currentDate: Date;
   burnoutRisk: BurnoutRisk;
 
+  confirmedSlots: string[]; // keys like "dayIdx_slot"
+  
   // Reasoning
   reasoningChain: ReasoningStep[];
   highlightedTaskId: string | null;
@@ -112,7 +116,9 @@ type Action =
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   | { type: "SET_USER_PROFILE"; payload: any }
   | { type: "CLEAR_SCHEDULED" }
-  | { type: "SET_SECTIONS"; payload: { days: DaySchedule[]; weights: { morning: number; afternoon: number; evening: number }; log: string[] } };
+  | { type: "SET_SECTIONS"; payload: { days: DaySchedule[]; weights: { morning: number; afternoon: number; evening: number }; log: string[] } }
+  | { type: "RECALIBRATE" }
+  | { type: "TOGGLE_CONFIRM_SLOT"; payload: string };
 
 // ── ID Generator ──────────────────────────────────────────
 
@@ -139,6 +145,7 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         tasks: newTasks,
+        burnoutRisk: calculateBurnoutRisk(newTasks),
         reasoningChain: [...state.reasoningChain, addReasoning],
         isAddTaskOpen: false,
       };
@@ -146,16 +153,20 @@ function reducer(state: AppState, action: Action): AppState {
 
     case "UPDATE_TASK": {
       const updatedTask = action.payload;
+      const newTasks = state.tasks.map(t => t.id === updatedTask.id ? updatedTask : t);
       return {
         ...state,
-        tasks: state.tasks.map(t => t.id === updatedTask.id ? updatedTask : t)
+        tasks: newTasks,
+        burnoutRisk: calculateBurnoutRisk(newTasks),
       };
     }
 
     case "SET_TASKS": {
+      const newTasks = action.payload;
       return {
         ...state,
-        tasks: action.payload,
+        tasks: newTasks,
+        burnoutRisk: calculateBurnoutRisk(newTasks),
       };
     }
 
@@ -224,17 +235,49 @@ function reducer(state: AppState, action: Action): AppState {
     }
 
     case "RUN_SCHEDULER": {
-      const result = runSchedulingAlgorithm(
-        state.tasks,
-        state.adjustedBandwidthCurve,
-        state.userProfile,
-        state.reasoningChain
-      );
+      const output = runScheduler({
+        tasks: state.tasks,
+        startDate: state.currentDate.toISOString().split("T")[0],
+        sectionWeights: state.sectionWeights,
+        userProfile: state.userProfile,
+      });
+
+      // Update task states
+      const scheduledIds = new Set<string>();
+      for (const day of output.days) {
+        for (const section of day.sections) {
+          for (const item of section.tasks) {
+            scheduledIds.add(item.taskId);
+          }
+        }
+      }
+
+      const updatedTasks = state.tasks.map((t) => {
+        if (scheduledIds.has(t.id)) {
+          return { ...t, state: "scheduled" as TaskState, scheduledSlot: undefined };
+        } else if (output.unscheduled.includes(t.id)) {
+          return { ...t, state: "unscheduled" as TaskState, scheduledSlot: undefined };
+        }
+        return t;
+      });
+
+      const newSteps = output.reasoningLog.map((text, i) => ({
+        number: state.reasoningChain.length + i + 1,
+        text,
+        isRule: text.startsWith("RULE") || text.includes("Budget") || text.includes("Anti-starvation"),
+        isAction: text.includes("placed") || text.includes("Schedule"),
+      }));
+
       return {
         ...state,
-        tasks: result.tasks,
-        activeConflict: result.conflict,
-        reasoningChain: result.reasoningChain,
+        tasks: updatedTasks,
+        scheduledDays: output.days,
+        schedulerLog: output.reasoningLog,
+        reasoningChain: [
+          ...state.reasoningChain,
+          ...newSteps
+        ],
+        burnoutRisk: calculateBurnoutRisk(updatedTasks, output.days),
       };
     }
 
@@ -313,20 +356,69 @@ function reducer(state: AppState, action: Action): AppState {
         relatedTaskId: task.id
       };
 
+      const updatedTasks = state.tasks.map(t => t.id === action.payload.taskId ? {
+        ...t,
+        state: "scheduled" as TaskState,
+        scheduledSlot: {
+          startSlot: action.payload.startSlot,
+          endSlot: action.payload.startSlot + slotsNeeded,
+          day: action.payload.day,
+          fitnessScore: 5.0, // Arbitrary for manual override
+          reasoningSteps: [newReasoning]
+        }
+      } : t);
+
+      // Also update scheduledDays so it shows up in dashboards
+      const newScheduledDays = [...state.scheduledDays];
+      let dayData = newScheduledDays.find(d => d.dayOffset === action.payload.day);
+      
+      const sectionName = action.payload.startSlot < 48 ? "morning" : action.payload.startSlot < 72 ? "afternoon" : "evening";
+
+      if (!dayData) {
+        // Create a skeleton day if it doesn't exist
+        dayData = {
+          dayOffset: action.payload.day,
+          date: state.currentDate.toISOString().split("T")[0],
+          sections: [
+            { section: "morning", tasks: [], axiomUsed: 0, axiomBudget: 20, axiomRemaining: 20 },
+            { section: "afternoon", tasks: [], axiomUsed: 0, axiomBudget: 17.5, axiomRemaining: 17.5 },
+            { section: "evening", tasks: [], axiomUsed: 0, axiomBudget: 12.5, axiomRemaining: 12.5 },
+          ],
+          totalAxiomsUsed: 0,
+          totalAxiomsRemaining: 50,
+          diversityEntropy: 0,
+          loadAcceptable: true,
+        };
+        newScheduledDays.push(dayData);
+      }
+
+      const section = dayData.sections.find(s => s.section === sectionName);
+      if (section) {
+        const axiomResult = computeCL(task.difficulty, task.duration, 0, task.type, task.priority);
+        const axiomCost = axiomResult.total;
+        
+        section.tasks.push({
+          taskId: task.id,
+          taskName: task.name,
+          duration: task.duration,
+          axiomCost: axiomCost,
+          axiomGain: 0,
+          isRecreational: task.type === "recreational",
+          startSlot: action.payload.startSlot
+        });
+        
+        section.axiomUsed = +(section.axiomUsed + axiomCost).toFixed(2);
+        section.axiomRemaining = +(section.axiomRemaining - axiomCost).toFixed(2);
+        dayData.totalAxiomsUsed = +(dayData.totalAxiomsUsed + axiomCost).toFixed(2);
+        dayData.totalAxiomsRemaining = +(dayData.totalAxiomsRemaining - axiomCost).toFixed(2);
+      }
+
       return {
         ...state,
-        tasks: state.tasks.map(t => t.id === action.payload.taskId ? {
-          ...t,
-          state: "scheduled" as TaskState,
-          scheduledSlot: {
-            startSlot: action.payload.startSlot,
-            endSlot: action.payload.startSlot + slotsNeeded,
-            day: action.payload.day,
-            fitnessScore: 5.0, // Arbitrary for manual override
-            reasoningSteps: [newReasoning]
-          }
-        } : t),
-        reasoningChain: [...state.reasoningChain, newReasoning]
+        tasks: updatedTasks,
+        scheduledDays: newScheduledDays,
+        reasoningChain: [...state.reasoningChain, newReasoning],
+        burnoutRisk: calculateBurnoutRisk(updatedTasks, newScheduledDays),
       };
     }
 
@@ -402,6 +494,98 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
+    case "RECALIBRATE": {
+      // Find tasks with CL > 8 and ensure they are followed by recovery
+      const highCLTasks = state.tasks.filter(t => Math.abs(t.cl) > 8 && t.state === "scheduled");
+      const newRecoveryTasks: Task[] = [];
+      
+      highCLTasks.forEach(task => {
+        // Create a recovery block for this task
+        const recoveryTask: Task = {
+          id: `recovery-${task.id}-${Date.now()}`,
+          name: `Focus Reset (Ref: ${task.name})`,
+          type: "recreational",
+          duration: 30,
+          priority: "normal",
+          difficulty: 1,
+          subject: task.subject,
+          cl: -5, // Restorative
+          clBreakdown: {
+            baseDifficulty: 1,
+            durationWeight: 0.5,
+            deadlineUrgency: 1,
+            typeMultiplier: -1,
+            priorityWeight: 1,
+            total: -5,
+          },
+          state: "unscheduled",
+          order: (task.order ?? 0) + 0.5,
+          createdAt: new Date().toISOString(),
+        };
+        newRecoveryTasks.push(recoveryTask);
+      });
+
+      if (newRecoveryTasks.length === 0) return state;
+
+      const updatedTasks = [...state.tasks, ...newRecoveryTasks];
+      const output = runScheduler({
+        tasks: updatedTasks,
+        startDate: state.currentDate.toISOString().split("T")[0],
+        sectionWeights: state.sectionWeights,
+      });
+
+      // Update task states
+      const scheduledIds = new Set<string>();
+      for (const day of output.days) {
+        for (const section of day.sections) {
+          for (const item of section.tasks) {
+            scheduledIds.add(item.taskId);
+          }
+        }
+      }
+
+      const tasksWithNewStatus = updatedTasks.map((t) => {
+        if (scheduledIds.has(t.id)) {
+          return { ...t, state: "scheduled" as TaskState, scheduledSlot: undefined };
+        } else if (output.unscheduled.includes(t.id)) {
+          return { ...t, state: "unscheduled" as TaskState, scheduledSlot: undefined };
+        }
+        return t;
+      });
+
+      const newSteps = output.reasoningLog.map((text, i) => ({
+        number: state.reasoningChain.length + i + 1,
+        text,
+        isRule: text.startsWith("RULE") || text.includes("Budget") || text.includes("Anti-starvation"),
+        isAction: text.includes("placed") || text.includes("Schedule"),
+      }));
+
+      return {
+        ...state,
+        tasks: tasksWithNewStatus,
+        scheduledDays: output.days,
+        schedulerLog: output.reasoningLog,
+        reasoningChain: [
+          ...state.reasoningChain,
+          ...newSteps
+        ],
+        burnoutRisk: calculateBurnoutRisk(tasksWithNewStatus, output.days),
+      };
+    }
+
+    case "TOGGLE_CONFIRM_SLOT": {
+      const key = action.payload;
+      const isConfirmed = state.confirmedSlots.includes(key);
+      const newSlots = isConfirmed 
+        ? state.confirmedSlots.filter(s => s !== key)
+        : [...state.confirmedSlots, key];
+      
+      return {
+        ...state,
+        confirmedSlots: newSlots
+      };
+    }
+
     default:
       return state;
   }
@@ -423,6 +607,7 @@ const initialState: AppState = {
   dayPhase: "active",
   currentDate: new Date(),
   burnoutRisk: "safe",
+  confirmedSlots: [],
   reasoningChain: [
     { number: 1, text: "SCHEDULER INITIALIZED. 96x7 matrix loaded.", isRule: true },
     { number: 2, text: "Awaiting task data synchronization." }

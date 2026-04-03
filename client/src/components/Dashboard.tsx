@@ -22,10 +22,10 @@ import Header from "@/components/Header";
 import ReasoningChain from "@/components/ReasoningChain";
 import TaskBlock from "@/components/TaskBlock";
 import { formatDateHeading, formatDuration, slotToTime } from "@/lib/engine";
-import { runSchedulerAction, markSectionComplete } from "@/app/actions/schedule";
+import { runSchedulerAction, markSectionComplete } from "@/app/actions/tasks";
 import { AppProvider, useApp } from "@/lib/store";
 import { TASK_TYPE_LABELS } from "@/lib/types";
-import type { Task, SectionSchedule, DaySchedule } from "@/lib/types";
+import type { Task, SectionSchedule, DaySchedule, RunSchedulerResult } from "@/lib/types";
 
 // ── Section View Component ─────────────────────────────────
 
@@ -393,6 +393,15 @@ function DashboardContent() {
           >
             {isScheduling ? "Scheduling…" : "Run Axiom Scheduler"}
           </button>
+          {hasSections && (
+            <button
+              className="btn btn-sm"
+              onClick={() => dispatch({ type: "RECALIBRATE" })}
+              title="Insert recovery blocks for High CL tasks"
+            >
+              Recalibrate
+            </button>
+          )}
           {hasSections && (
             <button
               className="btn btn-sm"
