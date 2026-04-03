@@ -98,6 +98,7 @@ export interface Task {
   energyRecovery?: number; // negative CL for recreational
   cl: number; // computed cognitive load
   clBreakdown: CLBreakdown;
+  order: number; // preserved sequence for subtasks
   scheduledSlot?: ScheduledSlot;
   createdAt: string;
 }

@@ -44,6 +44,7 @@ export async function createTasksTables(): Promise<void> {
       cl FLOAT NOT NULL DEFAULT 0,
       cl_breakdown JSONB DEFAULT '{}'::jsonb,
       scheduled_slot JSONB,
+        "order" INTEGER DEFAULT 0,
       created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
     )
   `;
@@ -98,12 +99,16 @@ export async function getTasks(): Promise<{ tasks?: Task[]; error?: string }> {
     let result;
     try {
       result = await sql`
-        SELECT * FROM tasks WHERE user_id = ${userId} ORDER BY created_at ASC
+        SELECT * FROM tasks WHERE user_id = ${userId} ORDER BY "order" ASC, created_at ASC;
       `;
-    } catch (dbError: unknown) {
-      const msg = dbError instanceof Error ? dbError.message : "";
-      if (msg.includes('relation "tasks" does not exist')) {
-        await createTasksTables();
+    } catch (dbError: any) {
+      if (dbError.message && dbError.message.includes('column "order" does not exist')) {
+        await sql`ALTER TABLE tasks ADD COLUMN "order" INTEGER DEFAULT 0;`;
+        result = await sql`
+          SELECT * FROM tasks WHERE user_id = ${userId} ORDER BY "order" ASC, created_at ASC;
+        `;
+      } else if (dbError.message && dbError.message.includes('relation "tasks" does not exist')) {
+        await createTasksTable();
         result = await sql`
           SELECT * FROM tasks WHERE user_id = ${userId} ORDER BY created_at ASC
         `;
@@ -111,65 +116,29 @@ export async function getTasks(): Promise<{ tasks?: Task[]; error?: string }> {
         throw dbError;
       }
     }
-    return { tasks: result.rows.map((r) => rowToTask(r as Record<string, unknown>)) };
-  } catch (err) {
-    console.error("getTasks failed:", err);
-    return { error: "Failed to fetch tasks" };
-  }
-}
+    
+    const tasks = result.rows.map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      difficulty: row.difficulty,
+      duration: row.duration,
+      priority: row.priority,
+      state: row.state,
+      subject: row.subject || undefined,
+      deadline: row.deadline ? new Date(row.deadline).toISOString() : undefined,
+      energyRecovery: row.energy_recovery || undefined,
+      cl: row.cl,
+      clBreakdown: row.cl_breakdown,
+      order: row.order || 0,
+      scheduledSlot: row.scheduled_slot || undefined,
+      createdAt: new Date(row.created_at).toISOString(),
+    })) as Task[];
 
-export async function saveTask(task: Task): Promise<{ error?: string }> {
-  const userId = await getUserId();
-  if (!userId) return { error: "Unauthorized" };
-
-  try {
-    await createTasksTables();
-
-    const clBreakdownJson = JSON.stringify(task.clBreakdown);
-    const scheduledSlotJson = task.scheduledSlot
-      ? JSON.stringify(task.scheduledSlot)
-      : null;
-
-    await sql`
-      INSERT INTO tasks (
-        id, user_id, name, type, difficulty, duration, priority, state,
-        subject, deadline, energy_recovery, cl, cl_breakdown, scheduled_slot, created_at
-      )
-      VALUES (
-        ${task.id},
-        ${userId},
-        ${task.name},
-        ${task.type},
-        ${task.difficulty},
-        ${task.duration},
-        ${task.priority},
-        ${task.state},
-        ${task.subject ?? null},
-        ${task.deadline ?? null},
-        ${task.energyRecovery ?? null},
-        ${task.cl},
-        ${clBreakdownJson}::jsonb,
-        ${scheduledSlotJson}::jsonb,
-        ${task.createdAt}
-      )
-      ON CONFLICT (id) DO UPDATE SET
-        name            = EXCLUDED.name,
-        type            = EXCLUDED.type,
-        difficulty      = EXCLUDED.difficulty,
-        duration        = EXCLUDED.duration,
-        priority        = EXCLUDED.priority,
-        state           = EXCLUDED.state,
-        subject         = EXCLUDED.subject,
-        deadline        = EXCLUDED.deadline,
-        energy_recovery = EXCLUDED.energy_recovery,
-        cl              = EXCLUDED.cl,
-        cl_breakdown    = EXCLUDED.cl_breakdown,
-        scheduled_slot  = EXCLUDED.scheduled_slot
-    `;
-    return {};
-  } catch (err) {
-    console.error("saveTask failed:", err);
-    return { error: "Failed to save task" };
+    return { tasks };
+  } catch (error) {
+    console.error("Fetch tasks failed:", error);
+    return { error: "Failed to fetch tasks." };
   }
 }
 
@@ -191,8 +160,19 @@ export async function updateTaskState(
     if (scheduledSlot) {
       const slotJson = JSON.stringify(scheduledSlot);
       await sql`
-        UPDATE tasks SET state = ${state}, scheduled_slot = ${slotJson}::jsonb
-        WHERE id = ${taskId} AND user_id = ${userId}
+        INSERT INTO tasks (
+          id, user_id, name, type, difficulty, duration, priority, state, subject, 
+          deadline, energy_recovery, cl, cl_breakdown, scheduled_slot, "order", created_at
+        ) VALUES (
+          ${task.id}, ${userId}, ${task.name}, ${task.type}, ${task.difficulty}, ${task.duration}, 
+          ${task.priority}, ${task.state}, ${task.subject || null}, 
+          ${task.deadline || null}, ${task.energyRecovery || null}, ${task.cl}, 
+          ${JSON.stringify(task.clBreakdown)}, 
+          ${task.scheduledSlot ? JSON.stringify(task.scheduledSlot) : null}, 
+          ${task.order || 0}, 
+          ${task.createdAt}
+        )
+        ON CONFLICT (id) DO NOTHING;
       `;
     } else {
       await sql`

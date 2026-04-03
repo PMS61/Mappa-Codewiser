@@ -6,22 +6,34 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
-import { AppProvider, useApp } from "@/lib/store";
+import { useState, useEffect, useRef } from "react";
+import { useApp } from "@/lib/store";
 import MatrixView from "./MatrixView";
 import AddTaskModal from "@/components/AddTaskModal";
 import Header from "@/components/Header";
 import { TASK_TYPE_LABELS } from "@/lib/types";
-import { getTasks, deleteTask, updateTaskStateAndSlot, syncTasks } from "@/app/actions/tasks";
+import { getTasks, deleteTask, updateTaskStateAndSlot, syncTasks, addTask } from "@/app/actions/tasks";
 import { getUserProfile } from "@/app/actions/auth";
 import { isSlotBlocked, runSchedulingAlgorithm } from "@/lib/engine";
-
+import { chunkText, topK, buildTasksFromRAG, extractTextFromFile } from "@/lib/rag-engine";
+import { getEmbeddingPipeline } from "@/lib/transformers-pipeline";
 import { DndContext, DragEndEvent } from "@dnd-kit/core";
+
 
 function SchedulerContent() {
   const { state, dispatch } = useApp();
   const [selectedTask, setSelectedTask] = useState<any>(null);
   const [isUnscheduledModalOpen, setIsUnscheduledModalOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // ── RAG Extraction State ──
+  const [ragInput, setRagInput] = useState("");
+  const [ragTopic, setRagTopic] = useState("");
+  const [ragDeadline, setRagDeadline] = useState("in 2 weeks");
+  const [ragStatus, setRagStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [ragProgress, setRagProgress] = useState("");
+  const [ragError, setRagError] = useState("");
+
 
   useEffect(() => {
     async function load() {
@@ -53,6 +65,101 @@ function SchedulerContent() {
     
     await syncTasks(result.tasks);
   };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setRagStatus("loading");
+    setRagProgress(`Reading ${file.name}...`);
+    try {
+      const text = await extractTextFromFile(file, (msg) => setRagProgress(msg));
+      setRagInput(text);
+      setRagStatus("idle");
+    } catch (err: any) {
+      setRagError(err.message || "Failed to read file.");
+      setRagStatus("error");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleExtractTasks = async () => {
+    if (!ragInput.trim()) return setRagError("Please provide some context text first.");
+    if (!ragTopic.trim()) return setRagError("Please enter a topic or learning goal.");
+    
+    setRagStatus("loading");
+    setRagError("");
+    setRagProgress("Initialising embedding model...");
+    
+    try {
+      const pipe = await getEmbeddingPipeline((msg) => setRagProgress(msg));
+      
+      setRagProgress("Chunking text...");
+      const chunks = chunkText(ragInput);
+      if (chunks.length === 0) throw new Error("No extractable content found in provided text.");
+      
+      const cEmbs: number[][] = [];
+      for (let i = 0; i < chunks.length; i++) {
+        setRagProgress(`Embedding chunk ${i + 1} / ${chunks.length}`);
+        const out = await pipe([chunks[i]], { pooling: "mean", normalize: true });
+        cEmbs.push(out.data ? Array.from(out.data as any) : (out as any).tolist()[0]);
+      }
+      
+      setRagProgress("Embedding topic query...");
+      const qOut = await pipe([`Learning topics for ${ragTopic}`], { pooling: "mean", normalize: true });
+      const qEmb = Array.from(qOut.data as Float32Array);
+      
+      setRagProgress("Retrieving relevant chunks...");
+      const retrieved = topK(qEmb, cEmbs, chunks, Math.min(12, chunks.length));
+      
+      setRagProgress("Generating tasks via rules engine...");
+      const generated = buildTasksFromRAG(retrieved, ragTopic, ragDeadline);
+      
+      setRagProgress("Syncing with database...");
+      for (const t of generated) {
+        const id = crypto.randomUUID();
+        const { error } = await addTask({
+          id,
+          name: t.name,
+          subject: t.subject,
+          type: t.type as any,
+          difficulty: t.difficulty,
+          duration: t.duration,
+          priority: t.priority as any,
+          state: "unscheduled",
+          deadline: t.deadline,
+          cl: t.cl,
+          order: t.order,
+          clBreakdown: {
+            baseDifficulty: t.difficulty,
+            durationWeight: t.duration / 30, // example weighting
+            deadlineUrgency: 1.0,
+            typeMultiplier: (t as any).multiplier || 1.0,
+            priorityWeight: t.priority === "high" ? 1.5 : 1.0,
+            total: t.cl
+          },
+          createdAt: new Date().toISOString()
+        });
+        if (error) console.error("Failed to sync task:", t.name, error);
+      }
+
+      // Refresh tasks from server
+      const { tasks, error: fetchErr } = await getTasks();
+      if (!fetchErr && tasks) {
+        dispatch({ type: "SET_TASKS", payload: tasks });
+      }
+
+      setRagStatus("done");
+      setRagProgress("Extraction complete!");
+      setRagInput(""); // Clear on success
+    } catch (err: any) {
+      console.error("Extraction error:", err);
+      setRagError(err.message || "Failed to extract tasks.");
+      setRagStatus("error");
+    }
+  };
+
 
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
@@ -108,26 +215,103 @@ function SchedulerContent() {
         <div className="meta-text" style={{ marginBottom: 16 }}>RAG-Powered Extraction</div>
         <h2 style={{ marginBottom: 16 }}>Generate Tasks from Context</h2>
         
-        <div style={{ background: "var(--card-bg)", border: "0.5px solid var(--rule)", padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
-          <textarea 
-            placeholder="Paste syllabus, email thread, or meeting notes here. Axiom will extract tasks and assign appropriate CL scores..."
-            style={{ 
-              width: "100%", 
-              minHeight: 120, 
-              border: "none", 
-              background: "transparent",
-              resize: "vertical",
-              fontFamily: "var(--mono)",
-              fontSize: 13,
-              outline: "none"
-            }}
-          />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "0.5px solid var(--rule)", paddingTop: 16 }}>
-            <span className="meta-text" style={{ color: "var(--muted)" }}>Model: Axiom-Extraction-v1 (Streaming)</span>
-            <button className="btn btn-primary">Extract Tasks &gt;</button>
+        {ragStatus === "loading" ? (
+          <div style={{ background: "var(--card-bg)", border: "0.5px solid var(--rule)", padding: "48px 24px", textAlign: "center", display: "flex", flexDirection: "column", gap: 24 }}>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--vermillion)" }}>
+              {ragProgress}...
+            </div>
+            <div style={{ width: "100%", height: 1, background: "var(--rule)", position: "relative", overflow: "hidden" }}>
+              <div style={{ 
+                position: "absolute", 
+                height: "100%", 
+                background: "var(--vermillion)", 
+                width: "60%", 
+                left: "-60%",
+                animation: "pgbar 2s ease-in-out infinite"
+              }} />
+            </div>
+            <style jsx>{`
+              @keyframes pgbar {
+                0% { left: -60%; width: 30%; }
+                50% { left: 40%; width: 60%; }
+                100% { left: 100%; width: 30%; }
+              }
+            `}</style>
           </div>
-        </div>
+        ) : (
+          <div style={{ background: "var(--card-bg)", border: "0.5px solid var(--rule)", padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+            {ragError && (
+              <div style={{ padding: "8px 12px", background: "rgba(255,100,100,0.1)", color: "var(--vermillion)", fontSize: 13, border: "0.5px solid var(--vermillion)", marginBottom: 8 }}>
+                {ragError}
+              </div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div>
+                <label className="meta-text" style={{ marginBottom: 8, display: "block" }}>Topic/Goal</label>
+                <input 
+                  type="text"
+                  placeholder="Graph Algorithms, Midterm Review, etc."
+                  value={ragTopic}
+                  onChange={(e) => setRagTopic(e.target.value)}
+                  style={{ width: "100%", padding: "8px 12px", background: "var(--bg)", border: "0.5px solid var(--rule)", color: "var(--fg)", fontFamily: "var(--mono)", fontSize: 13, outline: "none" }}
+                />
+              </div>
+              <div>
+                <label className="meta-text" style={{ marginBottom: 8, display: "block" }}>Final Deadline</label>
+                <input 
+                  type="text"
+                  placeholder="in 2 weeks, in 3 days, etc."
+                  value={ragDeadline}
+                  onChange={(e) => setRagDeadline(e.target.value)}
+                  style={{ width: "100%", padding: "8px 12px", background: "var(--bg)", border: "0.5px solid var(--rule)", color: "var(--fg)", fontFamily: "var(--mono)", fontSize: 13, outline: "none" }}
+                />
+              </div>
+            </div>
+            <textarea 
+              placeholder="Paste syllabus, email thread, or meeting notes here. Axiom will extract tasks and assign appropriate CL scores..."
+              value={ragInput}
+              onChange={(e) => setRagInput(e.target.value)}
+              style={{ 
+                width: "100%", 
+                minHeight: 120, 
+                border: "none", 
+                background: "transparent",
+                resize: "vertical",
+                fontFamily: "var(--mono)",
+                fontSize: 13,
+                outline: "none",
+                padding: "12px 0"
+              }}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "0.5px solid var(--rule)", paddingTop: 16 }}>
+              <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+                <span className="meta-text" style={{ color: "var(--muted)" }}>Model: Axiom-Extraction-v1 (Streaming)</span>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ padding: "4px 8px", fontSize: 11 }}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  Upload Source (PDF/IMG)
+                </button>
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  style={{ display: "none" }} 
+                  accept=".pdf,image/*,.txt"
+                  onChange={handleFileUpload}
+                />
+              </div>
+              <button 
+                className="btn btn-primary"
+                onClick={handleExtractTasks}
+              >
+                Extract Tasks &gt;
+              </button>
+            </div>
+          </div>
+        )}
       </section>
+
 
       {/* Interactive Matrix Drag/Drop Panel */}
       <DndContext onDragEnd={handleDragEnd}>
@@ -307,9 +491,5 @@ function SchedulerContent() {
 }
 
 export default function TasksView() {
-  return (
-    <AppProvider>
-      <SchedulerContent />
-    </AppProvider>
-  );
+  return <SchedulerContent />;
 }
