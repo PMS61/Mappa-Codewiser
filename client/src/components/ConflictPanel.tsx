@@ -50,7 +50,7 @@ export default function ConflictPanel() {
                 onClick={async () => {
                    const newState = res === "sacrifice" ? "sacrificed" : res === "extend_deadline" ? "deadline_extended" : "rescheduled";
                    dispatch({ type: "RESOLVE_CONFLICT", payload: { taskId: conflict.taskId, resolution: res } });
-                   await updateTaskStateAndSlot(conflict.taskId, newState, null);
+                   await updateTaskStateAndSlot(conflict.taskId, newState, undefined);
                 }}
               >
                 <span>{info.label}</span>

@@ -6,7 +6,7 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { AppProvider, useApp } from "@/lib/store";
 import { formatDateHeading, slotToTime, formatDuration } from "@/lib/engine";
 import Header from "@/components/Header";
@@ -15,47 +15,207 @@ import TaskBlock from "@/components/TaskBlock";
 import ReasoningChain from "@/components/ReasoningChain";
 import AddTaskModal from "@/components/AddTaskModal";
 import ConflictPanel from "@/components/ConflictPanel";
-import { getTasks, deleteTask, syncTasks, updateTaskStateAndSlot } from "@/app/actions/tasks";
-import { getUserProfile } from "@/app/actions/auth";
+import {
+  getTasks,
+  saveTask,
+  saveBulkTasks,
+  saveSchedule,
+  deleteTask,
+  updateTaskStateAndSlot,
+} from "@/app/actions/tasks";
+import { priorityToNumber, taskTypeToSchedulerType } from "@/lib/scheduler";
 import { TASK_TYPE_LABELS } from "@/lib/types";
-import { runSchedulingAlgorithm } from "@/lib/engine";
+import type { Task, ReasoningStep } from "@/lib/types";
 
 function DashboardContent() {
   const { state, dispatch } = useApp();
   const [showReasoning, setShowReasoning] = useState(false);
-  const [selectedTask, setSelectedTask] = useState<any>(null);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isUnscheduledModalOpen, setIsUnscheduledModalOpen] = useState(false);
+  const [isLoadingTasks, setIsLoadingTasks] = useState(true);
+  const [isScheduling, setIsScheduling] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
 
-  const handleAutoSchedule = async () => {
-    const result = runSchedulingAlgorithm(
-      state.tasks,
-      state.adjustedBandwidthCurve,
-      state.userProfile,
-      state.reasoningChain
-    );
-    
-    dispatch({ type: "SET_TASKS", payload: result.tasks });
-    if (result.conflict) {
-      dispatch({ type: "SET_CONFLICT", payload: result.conflict });
-    }
-    
-    await syncTasks(result.tasks);
-  };
+  // Tracks the last-persisted snapshot of each task (id → serialized state+slot)
+  const prevTasksSnapRef = useRef<Map<string, string>>(new Map());
+  const isInitializedRef = useRef(false);
 
+  // ── Load tasks from DB on mount ────────────────────────
   useEffect(() => {
-    async function load() {
-      const { tasks, error } = await getTasks();
-      if (!error && tasks) {
-        dispatch({ type: "SET_TASKS", payload: tasks });
-      }
+    if (isInitializedRef.current) return;
+    isInitializedRef.current = true;
 
-      const { user, error: profileErr } = await getUserProfile();
-      if (!profileErr && user) {
-        dispatch({ type: "SET_USER_PROFILE", payload: user });
+    getTasks().then(({ tasks, error }) => {
+      setIsLoadingTasks(false);
+      if (error || !tasks) return; // fallback to sample data
+      if (tasks.length > 0) {
+        dispatch({ type: "INIT_TASKS", payload: tasks });
+        prevTasksSnapRef.current = new Map(
+          tasks.map((t) => [t.id, `${t.state}::${t.scheduledSlot?.startSlot ?? ""}::${t.scheduledSlot?.day ?? ""}`]),
+        );
+      }
+    });
+  }, [dispatch]);
+
+  // ── Persist changed tasks to DB ────────────────────────
+  useEffect(() => {
+    if (isLoadingTasks) return;
+
+    const snap = prevTasksSnapRef.current;
+    const toSave: Task[] = [];
+
+    for (const task of state.tasks) {
+      const key = `${task.state}::${task.scheduledSlot?.startSlot ?? ""}::${task.scheduledSlot?.day ?? ""}`;
+      if (snap.get(task.id) !== key) {
+        toSave.push(task);
+        snap.set(task.id, key);
       }
     }
-    load();
-  }, [dispatch]);
+
+    for (const task of toSave) {
+      saveTask(task); // fire-and-forget; UI already updated
+    }
+  }, [state.tasks, isLoadingTasks]);
+
+  // ── API-driven scheduler ───────────────────────────────
+  const runApiScheduler = useCallback(async () => {
+    setIsScheduling(true);
+    setScheduleError(null);
+
+    const schedulerTasks = state.tasks
+      .filter((t) => t.state === "unscheduled" || t.state === "rescheduled")
+      .map((t) => ({
+        id: t.id,
+        title: t.name,
+        difficulty: t.difficulty,
+        priority: priorityToNumber(t.priority),
+        duration: t.duration,
+        type: taskTypeToSchedulerType(t.type),
+        date: t.deadline?.split("T")[0],
+      }));
+
+    if (schedulerTasks.length === 0) {
+      dispatch({ type: "RUN_SCHEDULER" });
+      setIsScheduling(false);
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tasks: schedulerTasks,
+          startDate: new Date().toISOString().split("T")[0],
+        }),
+      });
+
+      if (!res.ok) {
+        const { error } = await res.json();
+        setScheduleError(error ?? "Schedule API failed");
+        setIsScheduling(false);
+        return;
+      }
+
+      const result = await res.json();
+      const { schedule, meta } = result as {
+        schedule: Record<string, Array<{
+          id: string; scheduledDate: string; energyCost: number; score: number;
+        }>>;
+        meta: { energyByDay: Record<string, { used: number; remaining: number }> };
+      };
+
+      const newReasoning: ReasoningStep[] = [
+        ...state.reasoningChain,
+        {
+          number: state.reasoningChain.length + 1,
+          text: `API SCHEDULER RUN: Energy model applied. ${schedulerTasks.filter(t => t.type === "work").length} work tasks, ${schedulerTasks.filter(t => t.type === "energy_gain").length} energy tasks.`,
+          isRule: true,
+        },
+      ];
+
+      const updatedTasks: Task[] = [...state.tasks];
+      let reasoningNum = newReasoning.length + 1;
+
+      for (const [date, dayEntries] of Object.entries(schedule)) {
+        const dayEnergy = meta.energyByDay[date];
+        newReasoning.push({
+          number: reasoningNum++,
+          text: `DAY ${date}: ${dayEntries.filter((e) => e.energyCost > 0).length} tasks scheduled. Energy used: ${dayEnergy?.used ?? "?"} / 50. Remaining: ${dayEnergy?.remaining ?? "?"}`,
+          isRule: true,
+        });
+
+        for (const entry of dayEntries) {
+          if (entry.energyCost === 0) continue;
+
+          const taskIdx = updatedTasks.findIndex((t) => t.id === entry.id);
+          if (taskIdx === -1) continue;
+
+          const task = updatedTasks[taskIdx];
+          const slotsNeeded = Math.ceil(task.duration / 15);
+          const dayOffset = Math.max(
+            0,
+            Math.round(
+              (new Date(date).getTime() - new Date().setHours(0, 0, 0, 0)) / 86400000,
+            ),
+          );
+
+          const baseSlot = 36; // 9:00 AM
+          const posInDay = dayEntries.filter(e => e.energyCost > 0).findIndex(e => e.id === entry.id);
+          const startSlot = baseSlot + posInDay * (slotsNeeded + 1);
+
+          updatedTasks[taskIdx] = {
+            ...task,
+            state: "scheduled",
+            scheduledSlot: {
+              startSlot,
+              endSlot: startSlot + slotsNeeded,
+              day: dayOffset,
+              fitnessScore: entry.score,
+              reasoningSteps: [
+                {
+                  number: 1,
+                  text: `Energy cost: ${entry.energyCost.toFixed(2)} / Score: ${entry.score.toFixed(3)}`,
+                  isRule: true,
+                  relatedTaskId: entry.id,
+                },
+                {
+                  number: 2,
+                  text: `ACTION: Scheduled on ${date} (Day +${dayOffset})`,
+                  isAction: true,
+                  relatedTaskId: entry.id,
+                },
+              ],
+            },
+          };
+
+          newReasoning.push({
+            number: reasoningNum++,
+            text: `SCHEDULED: "${task.name}" → ${date}. E_task=${entry.energyCost.toFixed(2)}, score=${entry.score.toFixed(3)}`,
+            isAction: true,
+            relatedTaskId: entry.id,
+          });
+        }
+
+        saveSchedule(
+          date,
+          updatedTasks.filter((t) => t.scheduledSlot?.day !== undefined),
+          dayEnergy?.used ?? 0,
+          dayEnergy?.remaining ?? 50,
+        );
+      }
+
+      dispatch({ type: "BULK_UPDATE_TASKS", payload: updatedTasks });
+      dispatch({ type: "SET_DAY_PHASE", payload: "active" });
+      saveBulkTasks(updatedTasks);
+    } catch (err) {
+      console.error("Schedule API error:", err);
+      setScheduleError("Network error. Falling back to local scheduler.");
+      dispatch({ type: "RUN_SCHEDULER" });
+    } finally {
+      setIsScheduling(false);
+    }
+  }, [state.tasks, state.reasoningChain, dispatch]);
 
   const scheduled = state.tasks
     .filter((t) => t.scheduledSlot && t.scheduledSlot.day === 0 && t.state !== "unscheduled")
@@ -76,20 +236,20 @@ function DashboardContent() {
       <Header />
 
       {state.burnoutRisk !== "safe" && (
-        <div style={{ 
-          background: state.burnoutRisk === "critical" ? "var(--vermillion)" : "var(--card-bg)", 
-          color: state.burnoutRisk === "critical" ? "var(--bg)" : "var(--vermillion)", 
-          padding: "12px 24px", 
-          textAlign: "center", 
+        <div style={{
+          background: state.burnoutRisk === "critical" ? "var(--vermillion)" : "var(--card-bg)",
+          color: state.burnoutRisk === "critical" ? "var(--bg)" : "var(--vermillion)",
+          padding: "12px 24px",
+          textAlign: "center",
           borderBottom: "0.5px solid var(--rule)",
           fontFamily: "var(--mono)",
           fontSize: 13,
           fontWeight: 600
         }}>
           [!] BURNOUT RISK STATE: {state.burnoutRisk.toUpperCase()} — {
-            state.burnoutRisk === "critical" 
-              ? "Critical overload detected. High CL tasks are now blocked from scheduling." 
-              : state.burnoutRisk === "warning" 
+            state.burnoutRisk === "critical"
+              ? "Critical overload detected. High CL tasks are now blocked from scheduling."
+              : state.burnoutRisk === "warning"
                 ? "Elevated continuous load. Forced light day recommended within 72 hours."
                 : "Watch state active. Monitoring aggregate duration."
           }
@@ -146,7 +306,7 @@ function DashboardContent() {
             </div>
           </div>
 
-          {/* Bandwidth chart — landing SVG style */}
+          {/* Bandwidth chart */}
           <div>
             <div className="meta-text" style={{ marginBottom: 12, display: "flex", justifyContent: "space-between" }}>
               <span>Mental Energy / Today</span>
@@ -160,8 +320,13 @@ function DashboardContent() {
       {/* ── Scheduler Controls ── */}
       <section className="container section-rule" style={{ padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-          <button className="btn btn-sm btn-primary" onClick={handleAutoSchedule}>
-            Run Scheduler
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={runApiScheduler}
+            disabled={isScheduling}
+            style={{ opacity: isScheduling ? 0.6 : 1, cursor: isScheduling ? "not-allowed" : "pointer" }}
+          >
+            {isScheduling ? "Scheduling…" : "Run Scheduler"}
           </button>
           <button
             className="btn btn-sm"
@@ -169,14 +334,24 @@ function DashboardContent() {
           >
             {showReasoning ? "Hide Reasoning" : `Reasoning Chain (${state.reasoningChain.length})`}
           </button>
+          {isLoadingTasks && (
+            <span className="meta-text" style={{ color: "var(--muted)" }}>Loading tasks…</span>
+          )}
         </div>
-        <button 
-          className="btn btn-sm" 
-          style={{ background: "var(--card-bg)" }} 
-          onClick={() => setIsUnscheduledModalOpen(true)}
-        >
-          Unscheduled Pool ({state.tasks.filter((t) => t.state === "unscheduled").length})
-        </button>
+        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+          {scheduleError && (
+            <span className="meta-text" style={{ color: "var(--vermillion)", fontSize: 11 }}>
+              [!] {scheduleError}
+            </span>
+          )}
+          <button
+            className="btn btn-sm"
+            style={{ background: "var(--card-bg)" }}
+            onClick={() => setIsUnscheduledModalOpen(true)}
+          >
+            Unscheduled Pool ({state.tasks.filter((t) => t.state === "unscheduled").length})
+          </button>
+        </div>
       </section>
 
       {/* ── Main content ── */}
@@ -196,12 +371,12 @@ function DashboardContent() {
           {(() => {
             const now = new Date();
             const currentSlot = Math.floor((now.getHours() * 60 + now.getMinutes()) / 15);
-            
-            const taskInCurrentSlot = scheduled.find(t => 
-              currentSlot >= (t.scheduledSlot?.startSlot ?? 0) && 
+
+            const taskInCurrentSlot = scheduled.find(t =>
+              currentSlot >= (t.scheduledSlot?.startSlot ?? 0) &&
               currentSlot < (t.scheduledSlot?.endSlot ?? 0)
             );
-            
+
             const currentTask = taskInCurrentSlot && taskInCurrentSlot.state !== "completed" ? taskInCurrentSlot : null;
 
             if (!currentTask) {
@@ -247,7 +422,7 @@ function DashboardContent() {
                     <span>·</span>
                     <span>{formatDuration(currentTask.duration)}</span>
                   </div>
-                  <button 
+                  <button
                     className="btn btn-primary"
                     style={{ width: "100%" }}
                     onClick={async () => {
@@ -280,21 +455,18 @@ function DashboardContent() {
           )}
         </div>
 
-        {/* Reasoning chain (matching trace-log from landing) */}
+        {/* Reasoning chain */}
         {showReasoning && <ReasoningChain />}
       </section>
 
       <AddTaskModal />
       <ConflictPanel />
 
-      {/* Unscheduled Modal */}
+      {/* ── Unscheduled Pool Modal ── */}
       {isUnscheduledModalOpen && (
         <div style={{
           position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
+          top: 0, left: 0, right: 0, bottom: 0,
           background: "rgba(10,10,12,0.8)",
           backdropFilter: "blur(4px)",
           display: "flex",
@@ -314,8 +486,8 @@ function DashboardContent() {
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
               <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>Unscheduled Pool</h2>
-              <button 
-                style={{ background: "transparent", border: "none", color: "var(--fg)", fontSize: 24, cursor: "pointer" }}
+              <button
+                style={{ background: "transparent", border: "none", color: "var(--ink)", fontSize: 24, cursor: "pointer" }}
                 onClick={() => setIsUnscheduledModalOpen(false)}
               >
                 ✕
@@ -326,14 +498,16 @@ function DashboardContent() {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                 {state.tasks.filter(t => t.state === "unscheduled").map(task => (
-                  <div key={task.id} style={{ 
-                    padding: 16, border: "0.5px solid var(--rule)", cursor: "pointer", background: "var(--bg)" 
-                  }} onClick={() => {
-                    setSelectedTask(task);
-                    setIsUnscheduledModalOpen(false);
-                  }}>
+                  <div
+                    key={task.id}
+                    style={{ padding: 16, border: "0.5px solid var(--rule)", cursor: "pointer", background: "var(--bg)" }}
+                    onClick={() => {
+                      setSelectedTask(task);
+                      setIsUnscheduledModalOpen(false);
+                    }}
+                  >
                     <div className="meta-text" style={{ marginBottom: 8, color: "var(--muted)" }}>
-                      {TASK_TYPE_LABELS[task.type] || task.type.toUpperCase()}
+                      {TASK_TYPE_LABELS[task.type] ?? task.type.toUpperCase()}
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>{task.name}</div>
                     <div style={{ fontSize: 13, color: "var(--muted)", display: "flex", justifyContent: "space-between" }}>
@@ -348,12 +522,11 @@ function DashboardContent() {
         </div>
       )}
 
+      {/* ── Task Detail Panel ── */}
       {selectedTask && (
         <div style={{
           position: "fixed",
-          top: 0,
-          right: 0,
-          bottom: 0,
+          top: 0, right: 0, bottom: 0,
           width: "100%",
           maxWidth: 400,
           background: "var(--card-bg)",
@@ -365,7 +538,7 @@ function DashboardContent() {
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 32 }}>
             <h2 style={{ fontSize: 24, margin: 0, fontWeight: 700 }}>Task Details</h2>
-            <button 
+            <button
               style={{ cursor: "pointer", background: "transparent", border: "none", fontSize: 20 }}
               onClick={() => setSelectedTask(null)}
             >
@@ -405,8 +578,8 @@ function DashboardContent() {
           )}
 
           <div style={{ marginTop: 32, display: "flex", justifyContent: "flex-end" }}>
-            <button 
-              className="btn" 
+            <button
+              className="btn"
               style={{ color: "var(--vermillion)", borderColor: "var(--vermillion)" }}
               onClick={async () => {
                 dispatch({ type: "DELETE_TASK", payload: selectedTask.id });
