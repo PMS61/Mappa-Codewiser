@@ -5,10 +5,32 @@
    ═══════════════════════════════════════════════════════════ */
 
 "use client";
-
+ 
 import Link from "next/link";
-
+import { useEffect } from "react";
+import { useApp } from "@/lib/store";
+ 
 export default function LandingPage() {
+  const { state, dispatch } = useApp();
+
+  useEffect(() => {
+    const savedTheme = localStorage.getItem("theme") as "light" | "dark" | null;
+    if (savedTheme) {
+      dispatch({ type: "SET_THEME", payload: savedTheme });
+      document.documentElement.setAttribute("data-theme", savedTheme);
+    } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+       dispatch({ type: "SET_THEME", payload: "dark" });
+       document.documentElement.setAttribute("data-theme", "dark");
+    }
+  }, [dispatch]);
+
+  const toggleTheme = () => {
+    const nextTheme = state.theme === "light" ? "dark" : "light";
+    dispatch({ type: "SET_THEME", payload: nextTheme });
+    document.documentElement.setAttribute("data-theme", nextTheme);
+    localStorage.setItem("theme", nextTheme);
+  };
+
   return (
     <div style={{ minHeight: "100vh" }}>
       {/* ── Navigation ── */}
@@ -17,7 +39,14 @@ export default function LandingPage() {
           <Link href="/" className="logo">
             Axiom
           </Link>
-          <div style={{ display: "flex", gap: 16 }}>
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <button 
+              onClick={toggleTheme}
+              className="btn btn-sm"
+              style={{ padding: "4px 8px", fontSize: 9, border: '0.5px solid var(--rule)' }}
+            >
+              {state.theme === "light" ? "Dark" : "Light"}
+            </button>
             <Link
               href="/login"
               className="nav-link"

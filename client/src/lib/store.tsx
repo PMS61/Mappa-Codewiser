@@ -91,6 +91,9 @@ export interface AppState {
 
   // Scheduler reasoning log
   schedulerLog: string[];
+
+  // Theme
+  theme: "light" | "dark";
 }
 
 // ── Actions ───────────────────────────────────────────────
@@ -118,7 +121,8 @@ type Action =
   | { type: "CLEAR_SCHEDULED" }
   | { type: "SET_SECTIONS"; payload: { days: DaySchedule[]; weights: { morning: number; afternoon: number; evening: number }; log: string[] } }
   | { type: "RECALIBRATE" }
-  | { type: "TOGGLE_CONFIRM_SLOT"; payload: string };
+  | { type: "TOGGLE_CONFIRM_SLOT"; payload: string }
+  | { type: "SET_THEME"; payload: "light" | "dark" };
 
 // ── ID Generator ──────────────────────────────────────────
 
@@ -586,6 +590,9 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
+    case "SET_THEME":
+      return { ...state, theme: action.payload };
+
     default:
       return state;
   }
@@ -621,6 +628,7 @@ const initialState: AppState = {
   scheduledDays: [],
   sectionWeights: { morning: 0.40, afternoon: 0.35, evening: 0.25 },
   schedulerLog: [],
+  theme: "light",
 };
 
 // ── Context ───────────────────────────────────────────────

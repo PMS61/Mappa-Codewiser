@@ -3,6 +3,8 @@ import { getUserMatrix } from "@/lib/matrix-util";
 import Header from "@/components/Header";
 import { slotToTime } from "@/lib/engine";
 
+export const dynamic = "force-dynamic";
+
 export default async function MatrixDemoPage() {
   const result = await getUserMatrix();
 
