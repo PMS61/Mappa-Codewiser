@@ -11,6 +11,7 @@ import { getUserProfile } from "@/app/actions/auth";
 import {
   deleteTask,
   getTasks,
+  saveTask,
   updateTaskStateAndSlot,
 } from "@/app/actions/tasks";
 import AddTaskModal from "@/components/AddTaskModal";
@@ -171,7 +172,14 @@ function DashboardContent() {
       if (tasks.length > 0) {
         dispatch({ type: "INIT_TASKS", payload: tasks });
         prevTasksSnapRef.current = new Map(
-          tasks.map((t) => [t.id, `${t.state}::${t.scheduledSlot?.startSlot ?? ""}::${t.scheduledSlot?.day ?? ""}`]),
+          tasks.map((t) => [t.id, JSON.stringify({
+            s: t.state,
+            d: t.difficulty,
+            dur: t.duration,
+            p: t.priority,
+            n: t.name,
+            slot: t.scheduledSlot ?? null,
+          })]),
         );
       }
     });
@@ -201,7 +209,14 @@ function DashboardContent() {
     const toSave: Task[] = [];
 
     for (const task of state.tasks) {
-      const key = `${task.state}::${task.scheduledSlot?.startSlot ?? ""}::${task.scheduledSlot?.day ?? ""}`;
+      const key = JSON.stringify({
+        s: task.state,
+        d: task.difficulty,
+        dur: task.duration,
+        p: task.priority,
+        n: task.name,
+        slot: task.scheduledSlot ?? null,
+      });
       if (snap.get(task.id) !== key) {
         toSave.push(task);
         snap.set(task.id, key);
@@ -209,7 +224,7 @@ function DashboardContent() {
     }
 
     for (const task of toSave) {
-      saveBulkTasks([task]); // fire-and-forget; UI already updated
+      saveTask(task); // fire-and-forget; UI already updated
     }
   }, [state.tasks, isLoadingTasks]);
 
