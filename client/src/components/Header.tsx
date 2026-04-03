@@ -79,6 +79,7 @@ export default function Header() {
             <a href="/dashboard" className={`nav-link ${pathname === '/dashboard' ? 'active' : ''}`}>Dashboard</a>
             <a href="/dashboard/tasks" className={`nav-link ${pathname === '/dashboard/tasks' ? 'active' : ''}`}>Tasks & Matrix</a>
             <a href="/dashboard/report" className={`nav-link ${pathname === '/dashboard/report' ? 'active' : ''}`}>Report</a>
+            <a href="/dashboard/feedback" className={`nav-link ${pathname === '/dashboard/feedback' ? 'active' : ''}`}>Feedback</a>
             <a href="/dashboard/tutorial" className={`nav-link ${pathname === '/dashboard/tutorial' ? 'active' : ''}`}>Guide</a>
             <a href="/dashboard/profile" className={`nav-link ${pathname === '/dashboard/profile' ? 'active' : ''}`}>Profile</a>
             <button
