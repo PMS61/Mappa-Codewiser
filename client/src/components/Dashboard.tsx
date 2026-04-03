@@ -61,7 +61,7 @@ function DashboardContent() {
 
       {/* ── Hero Section: Date + Stats ── */}
       <section className="container section-rule" style={{ paddingTop: 60, paddingBottom: 40 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 60, alignItems: "start" }}>
+        <div className="responsive-grid-hero" style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 60, alignItems: "start" }}>
           <div>
             <div className="meta-text" style={{ marginBottom: 16 }}>
               {state.dayPhase.toUpperCase()} PHASE
@@ -74,7 +74,7 @@ function DashboardContent() {
             </p>
 
             <div
-              className="meta-text"
+              className="meta-text responsive-grid-stats"
               style={{
                 borderTop: "0.5px solid var(--rule)",
                 paddingTop: 16,
@@ -140,7 +140,7 @@ function DashboardContent() {
 
       {/* ── Main content ── */}
       <section
-        className="container"
+        className={`container ${showReasoning ? 'responsive-grid-split' : ''}`}
         style={{
           paddingTop: 40,
           paddingBottom: 80,

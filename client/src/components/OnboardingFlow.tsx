@@ -388,7 +388,7 @@ function TimeRangeSlider({
 
   return (
     <div style={{ display: "grid", gap: 8 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+      <div className="responsive-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
         <TimeValueBox
           id={`${idPrefix}-start`}
           label={startLabel}
@@ -1265,6 +1265,7 @@ export default function OnboardingFlow() {
             >
               <div className="step-title">Session config</div>
               <div
+                className="responsive-2col"
                 style={{
                   display: "grid",
                   gridTemplateColumns: "1fr 1fr",
@@ -1341,6 +1342,7 @@ export default function OnboardingFlow() {
 
               <div style={{ border: "0.5px solid var(--rule)", padding: 12 }}>
                 <div
+                  className="responsive-2col"
                   style={{
                     display: "grid",
                     gridTemplateColumns: "2fr 1fr",

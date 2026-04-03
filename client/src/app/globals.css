@@ -423,10 +423,20 @@ label {
   .landing-hero-grid h1 { font-size: 42px !important; }
   .landing-method-grid { grid-template-columns: 1fr 1fr !important; gap: 40px 0 !important; }
   .landing-trace-grid { grid-template-columns: 1fr !important; gap: 40px !important; }
+  
+  .responsive-grid-hero { grid-template-columns: 1fr !important; gap: 40px !important; }
+  .responsive-grid-stats { grid-template-columns: 1fr !important; }
+  .responsive-grid-split { grid-template-columns: 1fr !important; }
+  .responsive-2col { grid-template-columns: 1fr !important; }
 }
 
 @media (max-width: 600px) {
   h1 { font-size: 24px; }
   .container { padding: 0 16px; }
   .landing-method-grid { grid-template-columns: 1fr !important; }
+  
+  .nav { position: relative; border-bottom: 0.5px solid var(--ink); }
+  .nav-inner { flex-direction: column; height: auto; padding: 16px; gap: 12px; align-items: center; }
+  .nav-inner > div { flex-wrap: wrap; justify-content: center; }
+  .mobile-spacer { display: none; }
 }

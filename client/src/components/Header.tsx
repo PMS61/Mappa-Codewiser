@@ -46,6 +46,7 @@ export default function Header() {
             <a href="/tasks" className="nav-link">Tasks</a>
             <a href="/report" className="nav-link">Report</a>
             <a href="/tutorial" className="nav-link">Guide</a>
+            <a href="/profile" className="nav-link">Profile</a>
 
             <button
               className="btn btn-sm"
@@ -58,7 +59,7 @@ export default function Header() {
         </div>
       </header>
       {/* Spacer for fixed nav */}
-      <div style={{ height: 60 }} />
+      <div className="mobile-spacer" style={{ height: 60 }} />
     </>
   );
 }

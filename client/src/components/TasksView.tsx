@@ -9,6 +9,7 @@
 import { useState, useEffect } from "react";
 import { AppProvider, useApp } from "@/lib/store";
 import MatrixView from "./MatrixView";
+import AddTaskModal from "@/components/AddTaskModal";
 import { TASK_TYPE_LABELS } from "@/lib/types";
 
 import { DndContext, DragEndEvent } from "@dnd-kit/core";
@@ -40,13 +41,20 @@ function SchedulerContent() {
         <div className="nav-inner">
           <a href="/" className="logo">Axiom</a>
           <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
-            <a href="/" className="nav-link">Schedule</a>
+            <a href="/dashboard" className="nav-link">Dashboard</a>
             <a href="/tasks" className="nav-link active">Tasks / Matrix</a>
             <a href="/report" className="nav-link">Report</a>
+            <button
+              className="btn btn-sm"
+              style={{ marginLeft: 8 }}
+              onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}
+            >
+              + Task
+            </button>
           </div>
         </div>
       </header>
-      <div style={{ height: 60 }} />
+      <div className="mobile-spacer" style={{ height: 60 }} />
 
       {/* RAG Input Section */}
       <section className="container section-rule" style={{ paddingTop: 40, paddingBottom: 40 }}>
@@ -91,13 +99,16 @@ function SchedulerContent() {
       </DndContext>
 
       {/* Task Preview Modal Right Panel */}
+      <AddTaskModal />
+
       {selectedTask && (
         <div style={{
           position: "fixed",
           top: 0,
           right: 0,
           bottom: 0,
-          width: 400,
+          width: "100%",
+          maxWidth: 400,
           background: "var(--card-bg)",
           borderLeft: "0.5px solid var(--rule)",
           zIndex: 100000,

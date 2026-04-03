@@ -76,7 +76,7 @@ export default function AddTaskModal() {
             />
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+          <div className="responsive-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
             <div>
               <label htmlFor="task-type">Type</label>
               <select id="task-type" value={type} onChange={(e) => setType(e.target.value as TaskType)}>
@@ -95,7 +95,7 @@ export default function AddTaskModal() {
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+          <div className="responsive-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
             <div>
               <label htmlFor="task-difficulty">Difficulty: {difficulty}/10</label>
               <input
@@ -119,7 +119,7 @@ export default function AddTaskModal() {
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+          <div className="responsive-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
             <div>
               <label htmlFor="task-subject">Subject</label>
               <input

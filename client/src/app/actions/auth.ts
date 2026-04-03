@@ -6,6 +6,11 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { sql } from "@vercel/postgres";
 
+type TimeWindow = { start_min: number; end_min: number };
+type FixedBlock = { title: string; start_min: number; end_min: number; days: number[]; recurring: boolean };
+type TimeExclusion = { label: string; start_min: number; end_min: number; days: number[] };
+type RecoveryActivity = { name: string; duration_min: number; energy_value: number };
+
 type RegisterUserInput = {
   name: string;
   email: string;
@@ -21,6 +26,11 @@ type RegisterUserInput = {
     switch_buffer: number;
   };
   deadline_style: number;
+  peak_focus_windows?: TimeWindow[];
+  low_energy_windows?: TimeWindow[];
+  fixed_commitments?: FixedBlock[];
+  hard_exclusions?: TimeExclusion[];
+  recovery_activities?: RecoveryActivity[];
 };
 
 type LoginUserInput = {
@@ -92,9 +102,20 @@ export async function createUsersTable(): Promise<ActionResult> {
         session_style INT,
         switch_buffer INT,
         deadline_style INT,
+        peak_focus_windows JSONB DEFAULT '[]'::jsonb,
+        low_energy_windows JSONB DEFAULT '[]'::jsonb,
+        fixed_commitments JSONB DEFAULT '[]'::jsonb,
+        hard_exclusions JSONB DEFAULT '[]'::jsonb,
+        recovery_activities JSONB DEFAULT '[]'::jsonb,
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
     `;
+    // Add columns if they don't exist (for existing tables)
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS peak_focus_windows JSONB DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS low_energy_windows JSONB DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS fixed_commitments JSONB DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS hard_exclusions JSONB DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_activities JSONB DEFAULT '[]'::jsonb`;
     return {};
   } catch (error) {
     console.error("Create users table failed:", error);
@@ -112,9 +133,17 @@ export async function registerUser(userData: RegisterUserInput): Promise<ActionR
     wake_sleep,
     session_config,
     deadline_style,
+    peak_focus_windows = [],
+    low_energy_windows = [],
+    fixed_commitments = [],
+    hard_exclusions = [],
+    recovery_activities = [],
   } = userData;
 
   try {
+    // Ensure schema is up to date
+    await createUsersTable();
+
     const existing = await sql`
       SELECT id FROM users WHERE email = ${email} LIMIT 1;
     `;
@@ -124,6 +153,12 @@ export async function registerUser(userData: RegisterUserInput): Promise<ActionR
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    const peakJson = JSON.stringify(peak_focus_windows);
+    const lowJson = JSON.stringify(low_energy_windows);
+    const fixedJson = JSON.stringify(fixed_commitments);
+    const exclusionsJson = JSON.stringify(hard_exclusions);
+    const recoveryJson = JSON.stringify(recovery_activities);
 
     await sql`
       INSERT INTO users (
@@ -136,7 +171,12 @@ export async function registerUser(userData: RegisterUserInput): Promise<ActionR
         sleep_time,
         session_style,
         switch_buffer,
-        deadline_style
+        deadline_style,
+        peak_focus_windows,
+        low_energy_windows,
+        fixed_commitments,
+        hard_exclusions,
+        recovery_activities
       )
       VALUES (
         ${name},
@@ -148,7 +188,12 @@ export async function registerUser(userData: RegisterUserInput): Promise<ActionR
         ${wake_sleep.sleep},
         ${session_config.session_style},
         ${session_config.switch_buffer},
-        ${deadline_style}
+        ${deadline_style},
+        ${peakJson}::jsonb,
+        ${lowJson}::jsonb,
+        ${fixedJson}::jsonb,
+        ${exclusionsJson}::jsonb,
+        ${recoveryJson}::jsonb
       );
     `;
 
@@ -167,4 +212,96 @@ export async function loginUser(credentials: LoginUserInput): Promise<ActionResu
   }
 
   redirect("/dashboard");
+}
+
+export async function getUserProfile() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("token")?.value;
+  if (!token) return { error: "Not authenticated" };
+
+  try {
+    if (!process.env.JWT_SECRET) {
+      return { error: "Server is missing JWT_SECRET." };
+    }
+
+    // Ensure JSONB columns exist on older tables
+    await createUsersTable();
+
+    const { verify } = await import("jsonwebtoken");
+    const decoded = verify(token, process.env.JWT_SECRET) as { userId: number };
+
+    const result = await sql`
+      SELECT id, name, email, timezone, role, wake_time, sleep_time, session_style, switch_buffer, deadline_style,
+        peak_focus_windows, low_energy_windows, fixed_commitments, hard_exclusions, recovery_activities,
+        created_at
+      FROM users
+      WHERE id = ${decoded.userId}
+      LIMIT 1;
+    `;
+
+    if (result.rows.length === 0) {
+      return { error: "User not found" };
+    }
+
+    return { user: result.rows[0] as any };
+  } catch (error) {
+    console.error("Get user profile failed:", error);
+    return { error: "Failed to get user profile" };
+  }
+}
+
+export async function updateUserProfile(updates: {
+  wake_time?: number;
+  sleep_time?: number;
+  peak_focus_windows?: TimeWindow[];
+  low_energy_windows?: TimeWindow[];
+  fixed_commitments?: FixedBlock[];
+}): Promise<ActionResult> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("token")?.value;
+  if (!token) return { error: "Not authenticated" };
+
+  try {
+    if (!process.env.JWT_SECRET) {
+      return { error: "Server is missing JWT_SECRET." };
+    }
+    const { verify } = await import("jsonwebtoken");
+    const decoded = verify(token, process.env.JWT_SECRET) as { userId: number };
+
+    if (updates.wake_time !== undefined && updates.sleep_time !== undefined) {
+      await sql`
+        UPDATE users SET wake_time = ${updates.wake_time}, sleep_time = ${updates.sleep_time}
+        WHERE id = ${decoded.userId};
+      `;
+    }
+
+    if (updates.peak_focus_windows !== undefined) {
+      const json = JSON.stringify(updates.peak_focus_windows);
+      await sql`UPDATE users SET peak_focus_windows = ${json}::jsonb WHERE id = ${decoded.userId};`;
+    }
+
+    if (updates.low_energy_windows !== undefined) {
+      const json = JSON.stringify(updates.low_energy_windows);
+      await sql`UPDATE users SET low_energy_windows = ${json}::jsonb WHERE id = ${decoded.userId};`;
+    }
+
+    if (updates.fixed_commitments !== undefined) {
+      const json = JSON.stringify(updates.fixed_commitments);
+      await sql`UPDATE users SET fixed_commitments = ${json}::jsonb WHERE id = ${decoded.userId};`;
+      // Also update hard_exclusions to match
+      const exclusions = updates.fixed_commitments.map((c) => ({
+        label: c.title,
+        start_min: c.start_min,
+        end_min: c.end_min,
+        days: c.days,
+      }));
+      const exJson = JSON.stringify(exclusions);
+      await sql`UPDATE users SET hard_exclusions = ${exJson}::jsonb WHERE id = ${decoded.userId};`;
+    }
+
+    return {};
+  } catch (error) {
+    console.error("Update profile failed:", error);
+    return { error: "Failed to update profile." };
+  }
 }

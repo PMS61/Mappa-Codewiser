@@ -50,7 +50,7 @@ export default function TaskSidebar() {
         >
           CL BUDGET
         </h2>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-4)" }}>
+        <div className="responsive-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-4)" }}>
           <div>
             <span className="score-label">TOTAL CL</span>
             <div className="score-large">{totalCL.toFixed(1)}</div>

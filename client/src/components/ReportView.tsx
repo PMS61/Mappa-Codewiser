@@ -42,13 +42,13 @@ function ReportContent() {
         <div className="nav-inner">
           <a href="/" className="logo">Axiom</a>
           <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
-            <a href="/" className="nav-link">Schedule</a>
+            <a href="/dashboard" className="nav-link">Dashboard</a>
             <a href="/tasks" className="nav-link">Tasks</a>
             <a href="/report" className="nav-link active">Report</a>
           </div>
         </div>
       </header>
-      <div style={{ height: 60 }} />
+      <div className="mobile-spacer" style={{ height: 60 }} />
 
       {/* Hero */}
       <section className="container section-rule" style={{ paddingTop: 60, paddingBottom: 40 }}>

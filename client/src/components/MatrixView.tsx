@@ -124,21 +124,22 @@ export default function MatrixView({ onTaskClick }: { onTaskClick?: (task: any) 
   const END_HOUR = 23;
 
   return (
-    <div style={{ border: "0.5px solid var(--rule)", background: "var(--card-bg)" }}>
-      {/* Header */}
-      <div style={{ 
-        display: "grid", 
-        gridTemplateColumns: "56px repeat(7, 1fr)",
-        borderBottom: "0.5px solid var(--rule)",
-        background: "var(--bg)"
-      }}>
-        <div /> {/* Time gutter corner */}
-        {days.map(day => (
-          <div key={day} className="meta-text rule-left" style={{ padding: "8px 12px", textAlign: "center" }}>
-            {day}
-          </div>
-        ))}
-      </div>
+    <div style={{ border: "0.5px solid var(--rule)", background: "var(--card-bg)", overflowX: "auto" }}>
+      <div style={{ minWidth: 800 }}>
+        {/* Header */}
+        <div style={{ 
+          display: "grid", 
+          gridTemplateColumns: "56px repeat(7, 1fr)",
+          borderBottom: "0.5px solid var(--rule)",
+          background: "var(--bg)"
+        }}>
+          <div /> {/* Time gutter corner */}
+          {days.map(day => (
+            <div key={day} className="meta-text rule-left" style={{ padding: "8px 12px", textAlign: "center" }}>
+              {day}
+            </div>
+          ))}
+        </div>
 
       {/* Grid container */}
       <div style={{ 
@@ -194,6 +195,7 @@ export default function MatrixView({ onTaskClick }: { onTaskClick?: (task: any) 
         </div>
       </div>
       
+      </div>
       <div className="meta-text" style={{ padding: "8px 12px", borderTop: "0.5px solid var(--rule)", textAlign: "center" }}>
         96×7 Matrix View Active
       </div>
