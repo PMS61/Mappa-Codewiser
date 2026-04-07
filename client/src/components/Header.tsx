@@ -54,13 +54,16 @@ export default function Header() {
 
           <div className="nav-links-container" style={{ display: "flex", alignItems: "center", gap: 32 }}>
             {/* Energy indicator — compact */}
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span className="meta-text">{ENERGY_LABELS[state.energyLevel]}</span>
               <div style={{ display: "flex", gap: 2 }}>
                 {([-2, -1, 0, 1, 2] as EnergyLevel[]).map((level) => (
                   <button
                     key={level}
-                    onClick={() => dispatch({ type: "SET_ENERGY", payload: level })}
+                    onClick={() => {
+                      dispatch({ type: "SET_ENERGY", payload: level });
+                      dispatch({ type: "ADAPTIVE_RESCHEDULE", payload: { reason: "energy_changed" } });
+                    }}
                     style={{
                       width: 14,
                       height: 6,

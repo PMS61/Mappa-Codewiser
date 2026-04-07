@@ -94,6 +94,16 @@ export interface AppState {
 
   // Theme
   theme: "light" | "dark";
+
+  // Calibrated CL multipliers (learned from completion data)
+  calibratedMultipliers: {
+    learning: number;
+    problem_solving: number;
+    writing: number;
+    revision: number;
+    reading: number;
+    administrative: number;
+  } | null;
 }
 
 // ── Actions ───────────────────────────────────────────────
@@ -122,7 +132,10 @@ type Action =
   | { type: "SET_SECTIONS"; payload: { days: DaySchedule[]; weights: { morning: number; afternoon: number; evening: number }; log: string[] } }
   | { type: "RECALIBRATE" }
   | { type: "TOGGLE_CONFIRM_SLOT"; payload: string }
-  | { type: "SET_THEME"; payload: "light" | "dark" };
+  | { type: "SET_THEME"; payload: "light" | "dark" }
+  | { type: "ADAPTIVE_RESCHEDULE"; payload: { reason: "task_completed" | "task_skipped" | "new_task" | "energy_changed" } }
+  | { type: "CALIBRATE_MULTIPLIERS"; payload: { learning: number; problem_solving: number; writing: number; revision: number; reading: number; administrative: number } }
+  | { type: "RUN_WEEKLY_OPTIMIZATION" };
 
 // ── ID Generator ──────────────────────────────────────────
 
@@ -188,20 +201,45 @@ function reducer(state: AppState, action: Action): AppState {
       };
 
     case "UPDATE_TASK_STATE": {
+      const { taskId, state: newState } = action.payload;
+      let newScheduledDays = state.scheduledDays;
+
+      // If task is no longer purely scheduled (moved to unscheduled or completed), remove from sections
+      if (newState === "unscheduled" || newState === "completed") {
+        newScheduledDays = state.scheduledDays.map(day => ({
+          ...day,
+          sections: day.sections.map(sec => ({
+            ...sec,
+            tasks: sec.tasks.filter(t => t.taskId !== taskId)
+          }))
+        }));
+      }
+
       return {
         ...state,
         tasks: state.tasks.map((t) =>
-          t.id === action.payload.taskId
-            ? { ...t, state: action.payload.state }
+          t.id === taskId
+            ? { ...t, state: newState, scheduledSlot: newState === "unscheduled" ? undefined : t.scheduledSlot }
             : t,
         ),
+        scheduledDays: newScheduledDays,
       };
     }
 
     case "DELETE_TASK": {
+      const taskId = action.payload;
+      const newScheduledDays = state.scheduledDays.map(day => ({
+        ...day,
+        sections: day.sections.map(sec => ({
+          ...sec,
+          tasks: sec.tasks.filter(t => t.taskId !== taskId)
+        }))
+      }));
+
       return {
         ...state,
-        tasks: state.tasks.filter((t) => t.id !== action.payload),
+        tasks: state.tasks.filter((t) => t.id !== taskId),
+        scheduledDays: newScheduledDays,
       };
     }
 
@@ -373,16 +411,23 @@ function reducer(state: AppState, action: Action): AppState {
       } : t);
 
       // Also update scheduledDays so it shows up in dashboards
-      const newScheduledDays = [...state.scheduledDays];
-      let dayData = newScheduledDays.find(d => d.dayOffset === action.payload.day);
-      
-      const sectionName = action.payload.startSlot < 48 ? "morning" : action.payload.startSlot < 72 ? "afternoon" : "evening";
+      // 1. First, remove this task from ANY existing days/sections to prevent duplication
+      const newScheduledDays = state.scheduledDays.map(day => ({
+        ...day,
+        sections: day.sections.map(sec => ({
+          ...sec,
+          tasks: sec.tasks.filter(st => st.taskId !== action.payload.taskId)
+        }))
+      }));
 
+      const sectionName = action.payload.startSlot < 48 ? "morning" : action.payload.startSlot < 72 ? "afternoon" : "evening";
+      
+      let dayData = newScheduledDays.find(d => d.dayOffset === action.payload.day);
       if (!dayData) {
         // Create a skeleton day if it doesn't exist
         dayData = {
           dayOffset: action.payload.day,
-          date: state.currentDate.toISOString().split("T")[0],
+          date: new Date(state.currentDate.getTime() + action.payload.day * 86400000).toISOString().split("T")[0],
           sections: [
             { section: "morning", tasks: [], axiomUsed: 0, axiomBudget: 20, axiomRemaining: 20 },
             { section: "afternoon", tasks: [], axiomUsed: 0, axiomBudget: 17.5, axiomRemaining: 17.5 },
@@ -411,10 +456,11 @@ function reducer(state: AppState, action: Action): AppState {
           startSlot: action.payload.startSlot
         });
         
-        section.axiomUsed = +(section.axiomUsed + axiomCost).toFixed(2);
-        section.axiomRemaining = +(section.axiomRemaining - axiomCost).toFixed(2);
-        dayData.totalAxiomsUsed = +(dayData.totalAxiomsUsed + axiomCost).toFixed(2);
-        dayData.totalAxiomsRemaining = +(dayData.totalAxiomsRemaining - axiomCost).toFixed(2);
+        // Recalculate axiom usage for the section/day
+        section.axiomUsed = section.tasks.reduce((sum, t) => sum + t.axiomCost, 0);
+        section.axiomRemaining = +(section.axiomBudget - section.axiomUsed).toFixed(2);
+        dayData.totalAxiomsUsed = dayData.sections.reduce((sum, s) => sum + s.axiomUsed, 0);
+        dayData.totalAxiomsRemaining = +(50 - dayData.totalAxiomsUsed).toFixed(2);
       }
 
       return {
@@ -593,6 +639,171 @@ function reducer(state: AppState, action: Action): AppState {
     case "SET_THEME":
       return { ...state, theme: action.payload };
 
+    case "CALIBRATE_MULTIPLIERS": {
+      const mult = action.payload;
+      const calibrationReasoning: ReasoningStep = {
+        number: state.reasoningChain.length + 1,
+        text: `CL CALIBRATION: Updated multipliers based on completion rates — Learning: ${mult.learning.toFixed(2)}, Problem Solving: ${mult.problem_solving.toFixed(2)}, Writing: ${mult.writing.toFixed(2)}, Revision: ${mult.revision.toFixed(2)}, Reading: ${mult.reading.toFixed(2)}, Admin: ${mult.administrative.toFixed(2)}`,
+        isRule: true,
+      };
+      return {
+        ...state,
+        calibratedMultipliers: mult,
+        reasoningChain: [...state.reasoningChain, calibrationReasoning],
+      };
+    }
+
+    case "ADAPTIVE_RESCHEDULE": {
+      const reason = action.payload.reason;
+      
+      // Build reason log
+      const reasonLog: string[] = [];
+      switch (reason) {
+        case "task_completed":
+          reasonLog.push("ADAPTIVE: Task completed early - checking for free slots");
+          break;
+        case "task_skipped":
+          reasonLog.push("ADAPTIVE: Task skipped - re-entering pool with urgency bump");
+          break;
+        case "new_task":
+          reasonLog.push("ADAPTIVE: New urgent task added - recalculating schedule");
+          break;
+        case "energy_changed":
+          reasonLog.push(`ADAPTIVE: Energy level changed to ${state.energyLevel} - recalculating bandwidth`);
+          break;
+      }
+
+      // Check for forced light day due to burnout (CL cap at 4.0 when critical)
+      let tasksToSchedule = state.tasks;
+      if (state.burnoutRisk === "critical") {
+        tasksToSchedule = state.tasks.filter(t => Math.abs(t.cl) <= 4.0);
+        reasonLog.push("FORCED LIGHT DAY: Blocking high CL tasks (>4.0) due to critical burnout risk");
+      }
+
+      // Run scheduler on filtered tasks
+      const output = runScheduler({
+        tasks: tasksToSchedule,
+        startDate: state.currentDate.toISOString().split("T")[0],
+        sectionWeights: state.sectionWeights,
+        userProfile: state.userProfile,
+      });
+
+      // Update task states
+      const scheduledIds = new Set<string>();
+      for (const day of output.days) {
+        for (const section of day.sections) {
+          for (const item of section.tasks) {
+            scheduledIds.add(item.taskId);
+          }
+        }
+      }
+
+      const updatedTasks = state.tasks.map((t) => {
+        if (scheduledIds.has(t.id) && t.state === "unscheduled") {
+          return { ...t, state: "scheduled" as TaskState, scheduledSlot: undefined };
+        } else if (output.unscheduled.includes(t.id) && t.state === "scheduled") {
+          return { ...t, state: "unscheduled" as TaskState, scheduledSlot: undefined };
+        }
+        return t;
+      });
+
+      const newSteps = output.reasoningLog.map((text, i) => ({
+        number: state.reasoningChain.length + i + 1,
+        text: `[ADAPTIVE] ${text}`,
+        isRule: text.startsWith("RULE") || text.includes("Budget") || text.includes("Anti-starvation"),
+        isAction: text.includes("placed") || text.includes("Schedule"),
+      }));
+
+      return {
+        ...state,
+        tasks: updatedTasks,
+        scheduledDays: output.days,
+        schedulerLog: [...state.schedulerLog, ...reasonLog, ...output.reasoningLog],
+        reasoningChain: [...state.reasoningChain, ...newSteps],
+        burnoutRisk: calculateBurnoutRisk(updatedTasks, output.days),
+      };
+    }
+
+    case "RUN_WEEKLY_OPTIMIZATION": {
+      const tasks = state.tasks;
+      const now = new Date();
+      
+      // Check for forced light day due to burnout
+      if (state.burnoutRisk === "critical") {
+        const lightDayReasoning: ReasoningStep = {
+          number: state.reasoningChain.length + 1,
+          text: "FORCED LIGHT DAY: Burnout risk is critical. High CL tasks (>4.0) blocked from scheduling until recovery.",
+          isRule: true,
+        };
+        
+        // Filter out high CL tasks
+        const filteredTasks = tasks.map(t => {
+          if (Math.abs(t.cl) > 4.0 && t.state === "unscheduled") {
+            return { ...t, state: "unscheduled" as TaskState };
+          }
+          return t;
+        });
+        
+        return {
+          ...state,
+          tasks: filteredTasks,
+          reasoningChain: [...state.reasoningChain, lightDayReasoning],
+        };
+      }
+      
+      // Get all tasks with deadlines in next 7 days
+      const weekTasks = tasks.filter(t => {
+        if (!t.deadline) return false;
+        const deadline = new Date(t.deadline);
+        const daysUntil = (deadline.getTime() - now.getTime()) / (1000 * 3600 * 24);
+        return daysUntil >= 0 && daysUntil <= 7;
+      });
+
+      if (weekTasks.length === 0) {
+        return state;
+      }
+
+      // Rank by urgency × CL × priority
+      const scored = weekTasks.map(t => {
+        const deadline = new Date(t.deadline!);
+        const daysUntil = Math.max(0, (deadline.getTime() - now.getTime()) / (1000 * 3600 * 24));
+        const priorityNum = { high: 3, normal: 2, low: 1 }[t.priority];
+        const urgency = priorityNum / (daysUntil + 1);
+        const composite = urgency * Math.abs(t.cl) * priorityNum;
+        return { task: t, daysUntil, composite };
+      }).sort((a, b) => b.composite - a.composite);
+
+      // Distribute across days to balance load
+      const dayLoad: Record<number, number> = {};
+      for (let i = 0; i < 7; i++) dayLoad[i] = 0;
+
+      const distributed: { taskId: string; day: number }[] = [];
+      for (const item of scored) {
+        // Find day with lowest load
+        let bestDay = 0;
+        let minLoad = Infinity;
+        for (let d = 0; d <= Math.min(7, Math.ceil(item.daysUntil)); d++) {
+          if (dayLoad[d] < minLoad) {
+            minLoad = dayLoad[d];
+            bestDay = d;
+          }
+        }
+        dayLoad[bestDay] += Math.abs(item.task.cl);
+        distributed.push({ taskId: item.task.id, day: bestDay });
+      }
+
+      const optReasoning: ReasoningStep = {
+        number: state.reasoningChain.length + 1,
+        text: `WEEKLY OPTIMIZATION: Distributed ${scored.length} deadline tasks across 7 days. Load balance: ${Object.entries(dayLoad).map(([d, l]) => `Day${d}=${l.toFixed(1)}`).join(", ")}`,
+        isRule: true,
+      };
+
+      return {
+        ...state,
+        reasoningChain: [...state.reasoningChain, optReasoning],
+      };
+    }
+
     default:
       return state;
   }
@@ -629,6 +840,7 @@ const initialState: AppState = {
   sectionWeights: { morning: 0.40, afternoon: 0.35, evening: 0.25 },
   schedulerLog: [],
   theme: "light",
+  calibratedMultipliers: null,
 };
 
 // ── Context ───────────────────────────────────────────────

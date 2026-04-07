@@ -573,3 +573,73 @@ export function calculateAnalytics(tasks: Task[]): SchedulerAnalytics {
     deadlineBufferDays: count > 0 ? +(totalDelta / count).toFixed(1) : 0
   };
 }
+
+interface TypeCompletionStats {
+  type: string;
+  scheduled: number;
+  completed: number;
+  completionRate: number;
+}
+
+export function computeCalibratedMultipliers(tasks: Task[]): {
+  learning: number;
+  problem_solving: number;
+  writing: number;
+  revision: number;
+  reading: number;
+  administrative: number;
+} | null {
+  const completed = tasks.filter(t => t.state === "completed");
+  const scheduledOrCompleted = tasks.filter(t => t.state === "scheduled" || t.state === "completed");
+
+  if (scheduledOrCompleted.length === 0) return null;
+
+  const typeStats: TypeCompletionStats[] = [];
+  const types = ["learning", "problem_solving", "writing", "revision", "reading", "administrative"];
+
+  for (const taskType of types) {
+    const scheduled = scheduledOrCompleted.filter(t => t.type === taskType);
+    const completedCount = completed.filter(t => t.type === taskType).length;
+    
+    typeStats.push({
+      type: taskType,
+      scheduled: scheduled.length,
+      completed: completedCount,
+      completionRate: scheduled.length > 0 ? completedCount / scheduled.length : 1.0,
+    });
+  }
+
+  const defaults = {
+    learning: 1.4,
+    problem_solving: 1.3,
+    writing: 1.1,
+    revision: 0.9,
+    reading: 0.8,
+    administrative: 0.6,
+  };
+
+  const calibrated: Record<string, number> = {};
+  for (const stat of typeStats) {
+    const defaultMult = defaults[stat.type as keyof typeof defaults] ?? 1.0;
+    let adjusted = defaultMult;
+
+    if (stat.scheduled >= 3) {
+      if (stat.completionRate >= 0.8) {
+        adjusted = defaultMult * 0.9;
+      } else if (stat.completionRate < 0.5) {
+        adjusted = defaultMult * 1.2;
+      }
+    }
+
+    calibrated[stat.type] = +(Math.max(0.5, Math.min(1.5, adjusted))).toFixed(2);
+  }
+
+  return calibrated as {
+    learning: number;
+    problem_solving: number;
+    writing: number;
+    revision: number;
+    reading: number;
+    administrative: number;
+  };
+}

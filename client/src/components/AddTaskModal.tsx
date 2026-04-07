@@ -71,6 +71,9 @@ export default function AddTaskModal() {
     // Save to DB
     await addTask(newTask);
 
+    // Trigger adaptive reschedule for new task
+    dispatch({ type: "ADAPTIVE_RESCHEDULE", payload: { reason: "new_task" } });
+
     // Reset form
     setName("");
     setDifficulty(5);

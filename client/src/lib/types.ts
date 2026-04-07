@@ -32,6 +32,16 @@ export const TASK_TYPE_MULTIPLIERS: Record<TaskType, number> = {
   recreational: -1.0,
 };
 
+export interface CalibratedMultipliers {
+  learning: number;
+  problem_solving: number;
+  writing: number;
+  revision: number;
+  reading: number;
+  administrative: number;
+  lastUpdated: string;
+}
+
 // ── Task Priority ─────────────────────────────────────────
 export type TaskPriority = "high" | "normal" | "low";
 

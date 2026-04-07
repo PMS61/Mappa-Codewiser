@@ -20,10 +20,9 @@ import BandwidthCurve from "@/components/BandwidthCurve";
 import ConflictPanel from "@/components/ConflictPanel";
 import Header from "@/components/Header";
 import ReasoningChain from "@/components/ReasoningChain";
-import TaskBlock from "@/components/TaskBlock";
-import { formatDateHeading, formatDuration, slotToTime } from "@/lib/engine";
+import { formatDateHeading, formatDuration, slotToTime, computeCalibratedMultipliers } from "@/lib/engine";
 import { runSchedulerAction, markSectionComplete } from "@/app/actions/tasks";
-import { AppProvider, useApp } from "@/lib/store";
+import { useApp } from "@/lib/store";
 import { TASK_TYPE_LABELS } from "@/lib/types";
 import type { Task, SectionSchedule, DaySchedule, RunSchedulerResult } from "@/lib/types";
 
@@ -40,11 +39,13 @@ function SectionView({
   tasks,
   onComplete,
   onMarkSectionDone,
+  onSkip,
 }: {
   section: SectionSchedule;
   tasks: Task[];
   onComplete: (taskId: string) => Promise<void>;
   onMarkSectionDone: () => Promise<void>;
+  onSkip?: (taskId: string) => Promise<void>;
 }) {
   const color = SECTION_COLORS[section.section] ?? "var(--ink)";
   const pct = section.axiomBudget > 0
@@ -107,13 +108,27 @@ function SectionView({
                   </div>
                 </div>
                 {!item.isRecreational && !isCompleted && (
-                  <button
-                    className="btn btn-sm"
-                    style={{ fontSize: 11, padding: "4px 10px" }}
-                    onClick={() => onComplete(item.taskId)}
-                  >
-                    ✓
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ fontSize: 11, padding: "4px 10px", marginRight: 4 }}
+                      onClick={() => onComplete(item.taskId)}
+                    >
+                      ✓
+                    </button>
+                    {onSkip && (
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        style={{ fontSize: 11, padding: "4px 10px", background: "var(--rule)" }}
+                        onClick={() => onSkip(item.taskId)}
+                        title="Skip task (re-enters pool)"
+                      >
+                        →
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             );
@@ -122,6 +137,7 @@ function SectionView({
       )}
 
       <button
+        type="button"
         className="btn btn-sm"
         style={{ marginTop: 12, fontSize: 10, color: "var(--muted)", width: "100%" }}
         onClick={onMarkSectionDone}
@@ -167,11 +183,13 @@ function DashboardContent() {
       });
     }
 
-    getTasks().then(({ tasks, error }) => {
+    getTasks().then(async ({ tasks, error }) => {
       setIsLoadingTasks(false);
-      if (error || !tasks) return; // fallback to sample data
+      if (error || !tasks) return;
+      
+      dispatch({ type: "INIT_TASKS", payload: tasks });
+      
       if (tasks.length > 0) {
-        dispatch({ type: "INIT_TASKS", payload: tasks });
         prevTasksSnapRef.current = new Map(
           tasks.map((t) => [t.id, JSON.stringify({
             s: t.state,
@@ -182,6 +200,20 @@ function DashboardContent() {
             slot: t.scheduledSlot ?? null,
           })]),
         );
+
+        // Auto-run scheduler on mount to populate scheduledDays
+        const todayStr = new Date().toISOString().split("T")[0];
+        const result = await runSchedulerAction(tasks, todayStr);
+        if (result.days) {
+          dispatch({
+            type: "SET_SECTIONS",
+            payload: {
+              days: result.days,
+              weights: result.updatedWeights || { morning: 0.40, afternoon: 0.35, evening: 0.25 },
+              log: result.reasoningLog || [],
+            },
+          });
+        }
       }
     });
 
@@ -582,9 +614,22 @@ function DashboardContent() {
                       onComplete={async (taskId) => {
                         dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId, state: "completed" } });
                         await updateTaskStateAndSlot(taskId, "completed", undefined);
+                        // Trigger adaptive reschedule after completion
+                        dispatch({ type: "ADAPTIVE_RESCHEDULE", payload: { reason: "task_completed" } });
                       }}
                       onMarkSectionDone={async () => {
                         await markSectionComplete(section.section as any, section.axiomBudget, section.axiomUsed);
+                        // Compute and store calibrated multipliers based on completion rates
+                        const calibrated = computeCalibratedMultipliers(state.tasks);
+                        if (calibrated) {
+                          dispatch({ type: "CALIBRATE_MULTIPLIERS", payload: calibrated });
+                        }
+                      }}
+                      onSkip={async (taskId) => {
+                        dispatch({ type: "UPDATE_TASK_STATE", payload: { taskId, state: "rescheduled" } });
+                        await updateTaskStateAndSlot(taskId, "rescheduled", undefined);
+                        // Trigger adaptive reschedule after skip
+                        dispatch({ type: "ADAPTIVE_RESCHEDULE", payload: { reason: "task_skipped" } });
                       }}
                     />
                   ))}
@@ -596,23 +641,14 @@ function DashboardContent() {
               )}
             </>
           ) : (
-            <>
-              <div className="meta-text" style={{ marginBottom: 16 }}>Today&apos;s Schedule</div>
-              {scheduled.length === 0 ? (
-                <div style={{ padding: "40px 0", textAlign: "center" }}>
-                  <p style={{ color: "var(--muted)", marginBottom: 16 }}>
-                    No tasks scheduled yet. Add tasks and run the Axiom Scheduler.
-                  </p>
-                  <button className="btn" onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}>
-                    + Add First Task
-                  </button>
-                </div>
-              ) : (
-                scheduled.map((task) => (
-                  <TaskBlock key={task.id} task={task} />
-                ))
-              )}
-            </>
+            <div style={{ padding: "40px 0", textAlign: "center" }}>
+              <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+                No tasks scheduled yet. Add tasks and run the Axiom Scheduler.
+              </p>
+              <button className="btn" onClick={() => dispatch({ type: "TOGGLE_ADD_TASK" })}>
+                + Add First Task
+              </button>
+            </div>
           )}
         </div>
 
@@ -781,9 +817,5 @@ function DashboardContent() {
 }
 
 export default function Dashboard() {
-  return (
-    <AppProvider>
-      <DashboardContent />
-    </AppProvider>
-  );
+  return <DashboardContent />;
 }

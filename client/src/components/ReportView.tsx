@@ -24,6 +24,7 @@ import {
 import { useApp } from "@/lib/store";
 import { calculateAnalytics } from "@/lib/engine";
 import { type Task } from "@/lib/types";
+import { getReportDataForDate } from "@/app/actions/report";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -40,6 +41,18 @@ interface Deviation {
   direction: DeviationDir;
   severity: "low" | "medium" | "high";
   note: string;
+}
+
+interface ObservedValues {
+  actualWakeMin: number;
+  actualSleepMin: number;
+  avgSleepDurationMin: number;
+  peak1ActualStart: number;
+  low1ActualStart: number;
+  avgSessionDurationPct: number;
+  recoveryAdherencePct: number;
+  contextSwitchesPerDay: number;
+  deadlineBufferDays: number;
 }
 
 // ── Helpers ───────────────────────────────────────────────
@@ -84,38 +97,32 @@ function dirIcon(dir: DeviationDir) {
 // ── Static deviation data (replace with algo later) ───────
 // These represent "what the algo observed vs. what user set".
 
-function buildDeviations(profile: UserProfile, tasks: Task[]): Deviation[] {
+function buildDeviations(profile: UserProfile, tasks: Task[], observed: ObservedValues | null): Deviation[] {
   const { wake_sleep } = profile;
   const analytics = calculateAnalytics(tasks);
 
-  // Use a pseudo-random jitter for sleep/wake as we don't track them yet
-  // but we want the report to look "shifted" if density is high
-  const jitter = analytics.contextSwitchesPerDay > 5 ? 45 : 15;
-
-  const ALGO = {
-    actual_wake_min: wake_sleep.wake + jitter,       
-    actual_sleep_min: wake_sleep.sleep + (jitter * 1.5),     
-    peak1_actual_start: (profile.peak_focus_windows[0]?.start_min ?? 540) + Math.round(jitter/2),
-    peak1_actual_end:   (profile.peak_focus_windows[0]?.end_min ?? 660) + Math.round(jitter/2),
-    low1_actual_start:  (profile.low_energy_windows[0]?.start_min ?? 840), 
-    low1_actual_end:    (profile.low_energy_windows[0]?.end_min ?? 900),
-    avg_sleep_duration_min: 420 - jitter,                 
-    avg_session_duration_pct: analytics.avgSessionDurationPct,
-    recovery_adherence_pct: analytics.recoveryAdherencePct,
-    context_switches_per_day: analytics.contextSwitchesPerDay,
-    deadline_buffer_days: analytics.deadlineBufferDays,
-  };
+  const hasObservedData = observed !== null;
+  
+  const actualWakeMin = hasObservedData ? observed!.actualWakeMin : wake_sleep.wake + (analytics.contextSwitchesPerDay > 5 ? 45 : 15);
+  const actualSleepMin = hasObservedData ? observed!.actualSleepMin : wake_sleep.sleep + (analytics.contextSwitchesPerDay > 5 ? 45 : 15) * 1.5;
+  const peak1ActualStart = hasObservedData ? observed!.peak1ActualStart : (profile.peak_focus_windows[0]?.start_min ?? 540) + 15;
+  const low1ActualStart = hasObservedData ? observed!.low1ActualStart : (profile.low_energy_windows[0]?.start_min ?? 840);
+  const avgSleepDurationMin = hasObservedData ? observed!.avgSleepDurationMin : 420 - (analytics.contextSwitchesPerDay > 5 ? 45 : 15);
+  const avgSessionDurationPct = hasObservedData ? observed!.avgSessionDurationPct : analytics.avgSessionDurationPct;
+  const recoveryAdherencePct = hasObservedData ? observed!.recoveryAdherencePct : analytics.recoveryAdherencePct;
+  const contextSwitchesPerDay = hasObservedData ? observed!.contextSwitchesPerDay : analytics.contextSwitchesPerDay;
+  const deadlineBufferDays = hasObservedData ? observed!.deadlineBufferDays : analytics.deadlineBufferDays;
 
   const deviations: Deviation[] = [];
 
   // ── Wake time ─────────────────────────────────────────
-  const wakeDelta = ALGO.actual_wake_min - wake_sleep.wake;
+  const wakeDelta = actualWakeMin - wake_sleep.wake;
   if (Math.abs(wakeDelta) >= 5) {
     deviations.push({
       category: "Sleep Rhythm",
       label: "Wake-up time",
       baseline: fmt(wake_sleep.wake),
-      current: fmt(ALGO.actual_wake_min),
+      current: fmt(actualWakeMin),
       delta: fmtDelta(wakeDelta),
       direction: wakeDelta > 0 ? "late" : "early",
       severity: Math.abs(wakeDelta) > 45 ? "high" : Math.abs(wakeDelta) > 20 ? "medium" : "low",
@@ -126,13 +133,13 @@ function buildDeviations(profile: UserProfile, tasks: Task[]): Deviation[] {
   }
 
   // ── Sleep time ────────────────────────────────────────
-  const sleepDelta = ALGO.actual_sleep_min - wake_sleep.sleep;
+  const sleepDelta = actualSleepMin - wake_sleep.sleep;
   if (Math.abs(sleepDelta) >= 5) {
     deviations.push({
       category: "Sleep Rhythm",
       label: "Sleep time",
       baseline: fmt(wake_sleep.sleep),
-      current: fmt(ALGO.actual_sleep_min),
+      current: fmt(actualSleepMin),
       delta: fmtDelta(sleepDelta),
       direction: sleepDelta > 0 ? "late" : "early",
       severity: Math.abs(sleepDelta) > 60 ? "high" : Math.abs(sleepDelta) > 30 ? "medium" : "low",
@@ -146,13 +153,13 @@ function buildDeviations(profile: UserProfile, tasks: Task[]): Deviation[] {
   const targetSleepSpan = wake_sleep.wake > wake_sleep.sleep
     ? wake_sleep.wake - wake_sleep.sleep
     : 1440 - wake_sleep.sleep + wake_sleep.wake;
-  const sleepDurDelta = ALGO.avg_sleep_duration_min - targetSleepSpan;
+  const sleepDurDelta = avgSleepDurationMin - targetSleepSpan;
   if (Math.abs(sleepDurDelta) >= 10) {
     deviations.push({
       category: "Sleep Rhythm",
       label: "Sleep duration",
       baseline: fmtDelta(targetSleepSpan),
-      current: fmtDelta(ALGO.avg_sleep_duration_min),
+      current: fmtDelta(avgSleepDurationMin),
       delta: fmtDelta(Math.abs(sleepDurDelta)),
       direction: sleepDurDelta < 0 ? "shorter" : "longer",
       severity: Math.abs(sleepDurDelta) > 90 ? "high" : Math.abs(sleepDurDelta) > 45 ? "medium" : "low",
@@ -165,13 +172,13 @@ function buildDeviations(profile: UserProfile, tasks: Task[]): Deviation[] {
   // ── Peak-focus window drift ───────────────────────────
   if (profile.peak_focus_windows.length > 0) {
     const p = profile.peak_focus_windows[0];
-    const startDelta = ALGO.peak1_actual_start - p.start_min;
+    const startDelta = peak1ActualStart - p.start_min;
     if (Math.abs(startDelta) >= 10) {
       deviations.push({
         category: "Focus Windows",
         label: "Peak-focus start",
         baseline: fmt(p.start_min),
-        current: fmt(ALGO.peak1_actual_start),
+        current: fmt(peak1ActualStart),
         delta: fmtDelta(startDelta),
         direction: startDelta > 0 ? "late" : "early",
         severity: Math.abs(startDelta) > 45 ? "high" : "medium",
@@ -185,13 +192,13 @@ function buildDeviations(profile: UserProfile, tasks: Task[]): Deviation[] {
   // ── Low-energy window drift ───────────────────────────
   if (profile.low_energy_windows.length > 0) {
     const l = profile.low_energy_windows[0];
-    const lDelta = ALGO.low1_actual_start - l.start_min;
+    const lDelta = low1ActualStart - l.start_min;
     if (Math.abs(lDelta) >= 10) {
       deviations.push({
         category: "Energy Pattern",
         label: "Low-energy onset",
         baseline: fmt(l.start_min),
-        current: fmt(ALGO.low1_actual_start),
+        current: fmt(low1ActualStart),
         delta: fmtDelta(lDelta),
         direction: lDelta < 0 ? "early" : "late",
         severity: Math.abs(lDelta) > 45 ? "high" : "medium",
@@ -203,61 +210,61 @@ function buildDeviations(profile: UserProfile, tasks: Task[]): Deviation[] {
   }
 
   // ── Session completion ────────────────────────────────
-  if (ALGO.avg_session_duration_pct < 85) {
+  if (avgSessionDurationPct < 85) {
     deviations.push({
       category: "Session Quality",
       label: "Session completion rate",
       baseline: "100%",
-      current: `${ALGO.avg_session_duration_pct}%`,
-      delta: `${100 - ALGO.avg_session_duration_pct}% gap`,
+      current: `${avgSessionDurationPct}%`,
+      delta: `${100 - avgSessionDurationPct}% gap`,
       direction: "shorter",
-      severity: ALGO.avg_session_duration_pct < 65 ? "high" : "medium",
-      note: `Only ${ALGO.avg_session_duration_pct}% of planned session time is being used. Interruptions or overestimation of capacity are likely causes.`,
+      severity: avgSessionDurationPct < 65 ? "high" : "medium",
+      note: `Only ${avgSessionDurationPct}% of planned session time is being used. Interruptions or overestimation of capacity are likely causes.`,
     });
   }
 
   // ── Recovery adherence ────────────────────────────────
-  if (ALGO.recovery_adherence_pct < 75) {
+  if (recoveryAdherencePct < 75) {
     deviations.push({
       category: "Recovery",
       label: "Recovery activity adherence",
       baseline: "100%",
-      current: `${ALGO.recovery_adherence_pct}%`,
-      delta: `${100 - ALGO.recovery_adherence_pct}% missed`,
+      current: `${recoveryAdherencePct}%`,
+      delta: `${100 - recoveryAdherencePct}% missed`,
       direction: "shorter",
-      severity: ALGO.recovery_adherence_pct < 50 ? "high" : "medium",
-      note: `Recovery activities (${profile.recovery_activities[0]?.name ?? "e.g. Walk"}) are being skipped ${100 - ALGO.recovery_adherence_pct}% of the time. This compounds fatigue over multi-day periods.`,
+      severity: recoveryAdherencePct < 50 ? "high" : "medium",
+      note: `Recovery activities (${profile.recovery_activities[0]?.name ?? "e.g. Walk"}) are being skipped ${100 - recoveryAdherencePct}% of the time. This compounds fatigue over multi-day periods.`,
     });
   }
 
   // ── Context switching ─────────────────────────────────
-  if (ALGO.context_switches_per_day > 4) {
+  if (contextSwitchesPerDay > 4) {
     deviations.push({
       category: "Focus Quality",
       label: "Context switches / day",
       baseline: "≤ 4",
-      current: `${ALGO.context_switches_per_day}`,
-      delta: `+${ALGO.context_switches_per_day - 4}`,
+      current: `${contextSwitchesPerDay}`,
+      delta: `+${contextSwitchesPerDay - 4}`,
       direction: "late",
-      severity: ALGO.context_switches_per_day > 7 ? "high" : "medium",
-      note: `Averaging ${ALGO.context_switches_per_day} task switches per day vs. your preferred style. Each unplanned switch adds ~${SESSION_LABELS[profile.session_config.switch_buffer].split("(")[1]?.replace(")", "") ?? "15 min"} of re-entry cost.`,
+      severity: contextSwitchesPerDay > 7 ? "high" : "medium",
+      note: `Averaging ${contextSwitchesPerDay} task switches per day vs. your preferred style. Each unplanned switch adds ~${SESSION_LABELS[profile.session_config.switch_buffer].split("(")[1]?.replace(")", "") ?? "15 min"} of re-entry cost.`,
     });
   }
 
   // ── Deadline buffer ───────────────────────────────────
-  if (ALGO.deadline_buffer_days !== 0) {
+  if (deadlineBufferDays !== 0) {
     deviations.push({
       category: "Deadline Rhythm",
       label: "Average deadline buffer",
       baseline: DEADLINE_LABELS[profile.deadline_style],
-      current: ALGO.deadline_buffer_days < 0
-        ? `${Math.abs(ALGO.deadline_buffer_days)}d late on avg`
-        : `${ALGO.deadline_buffer_days}d ahead on avg`,
-      delta: `${Math.abs(ALGO.deadline_buffer_days)}d`,
-      direction: ALGO.deadline_buffer_days < 0 ? "late" : "early",
-      severity: Math.abs(ALGO.deadline_buffer_days) > 2 ? "high" : "medium",
-      note: ALGO.deadline_buffer_days < 0
-        ? `Tasks are completing ${Math.abs(ALGO.deadline_buffer_days)} day(s) past deadline on average — misaligned with your "${DEADLINE_LABELS[profile.deadline_style]}" preference.`
+      current: deadlineBufferDays < 0
+        ? `${Math.abs(deadlineBufferDays)}d late on avg`
+        : `${deadlineBufferDays}d ahead on avg`,
+      delta: `${Math.abs(deadlineBufferDays)}d`,
+      direction: deadlineBufferDays < 0 ? "late" : "early",
+      severity: Math.abs(deadlineBufferDays) > 2 ? "high" : "medium",
+      note: deadlineBufferDays < 0
+        ? `Tasks are completing ${Math.abs(deadlineBufferDays)} day(s) past deadline on average — misaligned with your "${DEADLINE_LABELS[profile.deadline_style]}" preference.`
         : `Finishing ahead of deadline. Great alignment with your "${DEADLINE_LABELS[profile.deadline_style]}" style.`,
     });
   }
@@ -428,8 +435,8 @@ function CategoryGroup({ category, items }: { category: string; items: Deviation
           gap: 12,
         }}
       >
-        {items.map((d, i) => (
-          <DeviationCard key={i} d={d} />
+        {items.map((d) => (
+          <DeviationCard key={`${d.category}-${d.label}`} d={d} />
         ))}
       </div>
     </div>
@@ -471,9 +478,9 @@ function Timeline({ profile }: { profile: UserProfile }) {
     <div style={{ marginBottom: 40 }}>
       <div className="meta-text" style={{ marginBottom: 10 }}>Your baseline day — 00:00 → 23:59</div>
       <div style={{ position: "relative", height: 28, background: "var(--bg)", border: "0.5px solid var(--rule)" }}>
-        {segments.map((s, i) => (
+        {segments.map((s) => (
           <div
-            key={i}
+            key={`${s.label}-${s.start}`}
             title={`${s.label}: ${fmt(s.start)} – ${fmt(s.end)}`}
             style={{
               position: "absolute",
@@ -518,40 +525,60 @@ function Timeline({ profile }: { profile: UserProfile }) {
 
 function ReportContent() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [observed, setObserved] = useState<ObservedValues | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
 
-    async function loadProfile() {
+    async function loadData() {
       const localProfile = readStoredUserProfile();
       if (localProfile) {
         if (isMounted) {
           setProfile(toReportProfile(localProfile));
-          setLoaded(true);
         }
-        return;
+      } else {
+        try {
+          const { user, error } = await getUserProfile();
+          if (!error && user) {
+            const normalizedProfile = toStoredUserProfileFromServerUser(user);
+            if (normalizedProfile) {
+              if (isMounted) {
+                writeStoredUserProfile(normalizedProfile);
+                setProfile(toReportProfile(normalizedProfile));
+              }
+            }
+          }
+        } catch {
+          // Ignore fetch errors
+        }
       }
 
       try {
-        const { user, error } = await getUserProfile();
-        if (!error && user) {
-          const normalizedProfile = toStoredUserProfileFromServerUser(user);
-          if (normalizedProfile && isMounted) {
-            writeStoredUserProfile(normalizedProfile);
-            setProfile(toReportProfile(normalizedProfile));
-          }
+        const result = await getReportDataForDate();
+        if (!isMounted) return;
+
+        if (result.observation) {
+          setObserved({
+            actualWakeMin: result.observation.actualWakeMin,
+            actualSleepMin: result.observation.actualSleepMin,
+            avgSleepDurationMin: result.observation.avgSleepDurationMin,
+            peak1ActualStart: result.observation.peak1ActualStart,
+            low1ActualStart: result.observation.low1ActualStart,
+            avgSessionDurationPct: result.observation.avgSessionDurationPct,
+            recoveryAdherencePct: result.observation.recoveryAdherencePct,
+            contextSwitchesPerDay: result.observation.contextSwitchesPerDay,
+            deadlineBufferDays: result.observation.deadlineBufferDays,
+          });
         }
       } catch {
-        // Ignore fetch errors and show onboarding fallback UI
+        // Ignore observation errors
       } finally {
-        if (isMounted) {
-          setLoaded(true);
-        }
+        if (isMounted) setLoaded(true);
       }
     }
 
-    loadProfile();
+    loadData();
 
     return () => {
       isMounted = false;
@@ -559,7 +586,7 @@ function ReportContent() {
   }, []);
 
   const { state } = useApp();
-  const deviations = profile ? buildDeviations(profile, state.tasks) : [];
+  const deviations = profile ? buildDeviations(profile, state.tasks, observed) : [];
 
   // group by category
   const grouped = deviations.reduce<Record<string, Deviation[]>>((acc, d) => {
@@ -676,16 +703,16 @@ function ReportContent() {
             {/* Summary */}
             <SummaryBar deviations={deviations} />
 
-            {/* Note about algo */}
+            {/* Note about data source */}
             <div
               className="trace-log"
               style={{ marginBottom: 40, padding: "16px 24px" }}
             >
               <div className="meta-text" style={{ marginBottom: 6 }}>Data source</div>
               <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.7 }}>
-                Deviation values are currently static placeholders. When the scheduling algorithm is
-                connected, observed times will be derived from actual task completion timestamps and
-                calendar events pulled from your live sessions.
+                {observed
+                  ? "Observed values are pulled from your saved daily feedback. This includes actual wake/sleep times, session completion rates, and other metrics you track in the Feedback tab."
+                  : "No observed data available yet. Enter your daily values in the Feedback tab to see how your behaviour deviates from baseline."}
               </div>
             </div>
 
